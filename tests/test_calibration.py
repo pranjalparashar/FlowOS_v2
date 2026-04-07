@@ -31,7 +31,7 @@ def collect_scores() -> dict[str, list[float]]:
 def test_scores_stay_in_range() -> None:
     for task_scores in collect_scores().values():
         for score in task_scores:
-            assert 0.0 <= score <= 1.0
+            assert 0.0 < score < 1.0
 
 
 def test_easy_medium_hard_ordering() -> None:

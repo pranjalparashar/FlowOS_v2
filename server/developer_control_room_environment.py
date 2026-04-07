@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from uuid import uuid4
 
 from openenv.core.env_server.interfaces import Environment
@@ -35,6 +36,12 @@ class DeveloperControlRoomEnvironment(
     """Singleton-friendly environment simulating a developer workspace."""
 
     SUPPORTS_CONCURRENT_SESSIONS = False
+    MAX_PROGRESS_DELTA_REWARD = float(
+        os.getenv("DEVELOPER_CONTROL_ROOM_MAX_PROGRESS_DELTA_REWARD", "0.30")
+    )
+    SOLVED_TERMINAL_REWARD_BONUS = float(
+        os.getenv("DEVELOPER_CONTROL_ROOM_SOLVED_TERMINAL_REWARD_BONUS", "0.10")
+    )
 
     def __init__(self) -> None:
         self._task_def: dict = {}
@@ -137,7 +144,13 @@ class DeveloperControlRoomEnvironment(
 
         after_result = grade(self._state.task_id or "", self._state.model_dump(), self._scenario)
         progress_delta = after_result["total"] - before
+        progress_delta = max(
+            -self.MAX_PROGRESS_DELTA_REWARD,
+            min(self.MAX_PROGRESS_DELTA_REWARD, progress_delta),
+        )
         reward += progress_delta
+        if self._state.done and after_result.get("solved"):
+            reward += self.SOLVED_TERMINAL_REWARD_BONUS
         self._state.cumulative_reward = round(self._state.cumulative_reward + reward, 4)
         self._state.feedback = " | ".join(part for part in feedback if part) or after_result["feedback"]
 

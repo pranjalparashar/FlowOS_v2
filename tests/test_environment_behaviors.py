@@ -210,3 +210,49 @@ def test_seeded_variants_are_deterministic_and_change_literals() -> None:
     assert first["developer_request"] == second["developer_request"]
     assert first["files"]["schemas/subscription_mrr_daily.json"] == second["files"]["schemas/subscription_mrr_daily.json"]
     assert first["developer_request"] != third["developer_request"]
+
+
+def test_review_submission_reward_is_capped() -> None:
+    env = DeveloperControlRoomEnvironment()
+    observation = env.reset(task_id="review_ai_patch_safety", scenario_index=0)
+
+    for _ in range(3):
+        action_dict = fallback_action("review_ai_patch_safety", observation)
+        observation = env.step(build_action(action_dict))
+
+    submit_action = fallback_action("review_ai_patch_safety", observation)
+    result = env.step(build_action(submit_action))
+
+    assert submit_action["action_type"] == "submit_review"
+    assert result.reward <= (
+        DeveloperControlRoomEnvironment.MAX_PROGRESS_DELTA_REWARD
+        + DeveloperControlRoomEnvironment.SOLVED_TERMINAL_REWARD_BONUS
+        + 0.02
+    )
+
+
+def test_repair_edit_progress_reward_is_capped() -> None:
+    env = DeveloperControlRoomEnvironment()
+    observation = env.reset(task_id="repair_data_transform", scenario_index=0)
+
+    for _ in range(2):
+        action_dict = fallback_action("repair_data_transform", observation)
+        observation = env.step(build_action(action_dict))
+
+    edit_action = fallback_action("repair_data_transform", observation)
+    result = env.step(build_action(edit_action))
+
+    assert edit_action["action_type"] == "edit_file"
+    assert result.reward <= DeveloperControlRoomEnvironment.MAX_PROGRESS_DELTA_REWARD
+
+
+def test_solved_episode_gets_terminal_bonus() -> None:
+    env = DeveloperControlRoomEnvironment()
+    observation = env.reset(task_id="review_ai_patch_safety", scenario_index=0)
+
+    while not env._state.done:
+        action_dict = fallback_action("review_ai_patch_safety", observation)
+        observation = env.step(build_action(action_dict))
+
+    assert observation.done is True
+    assert observation.reward >= DeveloperControlRoomEnvironment.SOLVED_TERMINAL_REWARD_BONUS

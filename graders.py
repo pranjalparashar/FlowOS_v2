@@ -14,6 +14,10 @@ def _norm(text: str) -> str:
     return text.lower().strip()
 
 
+def _strict_score(value: float) -> float:
+    return round(min(0.99, max(0.01, value)), 4)
+
+
 def _workspace_files(state: dict, scenario: dict) -> dict[str, str]:
     files = dict(scenario.get("files", {}))
     files.update(state.get("edited_files", {}))
@@ -184,7 +188,7 @@ def _grade_pipeline_repair(state: dict, scenario: dict) -> dict[str, Any]:
         and fix_path_ok == 1.0
     )
 
-    total = round(min(1.0, investigation + edit_score + validator_score + submission_score), 4)
+    total = _strict_score(investigation + edit_score + validator_score + submission_score)
     return {
         "total": total,
         "solved": solved,
@@ -228,7 +232,7 @@ def _grade_llm_patch_review(state: dict, scenario: dict) -> dict[str, Any]:
         >= (2 / 3)
     )
 
-    total = round(min(1.0, investigation + verdict_score + issue_score + summary_score + validator_score), 4)
+    total = _strict_score(investigation + verdict_score + issue_score + summary_score + validator_score)
     return {
         "total": total,
         "solved": solved,
@@ -317,10 +321,7 @@ def _grade_workflow_shipping(state: dict, scenario: dict) -> dict[str, Any]:
         and summary_raw == 1.0
     )
 
-    total = round(
-        min(1.0, investigation + artifact_score + validator_score + governance_score + summary_score),
-        4,
-    )
+    total = _strict_score(investigation + artifact_score + validator_score + governance_score + summary_score)
     return {
         "total": total,
         "solved": solved,
@@ -351,7 +352,7 @@ def grade(task_id: str, state: dict, scenario: dict) -> dict[str, Any]:
     fn = graders.get(grader_family)
     if fn is None:
         return {
-            "total": 0.0,
+            "total": 0.01,
             "solved": False,
             "breakdown": {},
             "feedback": f"Unknown task or grader family '{task_id}'",

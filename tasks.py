@@ -1288,7 +1288,12 @@ grain:
             review_target={
                 "correct_verdict": "reject",
                 "correct_issue_type": "technical_incorrectness",
-                "summary_groups": [["join"], ["settlement_id", "merchant_id"], ["wrong", "incorrect"]],
+                "summary_groups": [
+                    ["join"],
+                    ["settlement_id", "merchant_id"],
+                    ["wrong", "incorrect"],
+                    ["grain", "one row per settlement_id"],
+                ],
                 "investigation_targets": [
                     ("inspect_llm_draft", "primary"),
                     ("read_file", "drafts/merchant_settlement_rollup.patch"),
@@ -1375,7 +1380,7 @@ published_columns:
                     ("read_file", "policies/published_contracts.md"),
                     ("run_validator", "contract_guard"),
                 ],
-                "validator_targets": ["contract_guard", "consumer_guard"],
+                "validator_targets": ["contract_guard"],
             },
             validators={
                 "contract_guard": review_validator(
@@ -1436,6 +1441,7 @@ policy_owner: platform-sre
                 "summary_groups": [["drop", "recreate"], ["disable", "checks"], ["unsafe", "policy"]],
                 "investigation_targets": [
                     ("inspect_llm_draft", "primary"),
+                    ("read_file", "drafts/warehouse_recovery_response.md"),
                     ("read_file", "policies/recovery_playbook.md"),
                     ("run_validator", "safety_guard"),
                 ],

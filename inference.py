@@ -70,9 +70,9 @@ load_env_file()
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")
 DEFAULT_ENV_URL = "https://praanjal-control-room.hf.space"
 ENV_URL = os.getenv("ENV_URL") or DEFAULT_ENV_URL
-API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
+API_KEY = os.environ["API_KEY"]
 
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+API_BASE_URL = os.environ["API_BASE_URL"]
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 TASK_NAME = os.getenv("DEVELOPER_CONTROL_ROOM_TASK")
 BENCHMARK = os.getenv("DEVELOPER_CONTROL_ROOM_BENCHMARK", "developer_control_room")
@@ -113,8 +113,9 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    bounded_score = min(0.99, max(0.01, score))
     print(
-        f"[END] success={str(success).lower()} steps={steps} score={max(0.0, min(score, 1.0)):.2f} rewards={rewards_str}",
+        f"[END] success={str(success).lower()} steps={steps} score={bounded_score:.2f} rewards={rewards_str}",
         flush=True,
     )
 
@@ -209,7 +210,7 @@ def record_episode_memory(
         "task_id": task_name,
         "scenario_id": scenario_id or "unknown",
         "solved": bool(solved),
-        "score": max(0.0, min(score, 1.0)),
+        "score": min(0.99, max(0.01, score)),
         "takeaway": takeaway,
         "actions": history[-4:],
     }
