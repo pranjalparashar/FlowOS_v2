@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import sys
 import textwrap
 from typing import Any, List, Optional
@@ -40,6 +41,8 @@ SYSTEM_PROMPT = textwrap.dedent(
 ).strip()
 
 DEBUG_LOGGING = os.getenv("DEVELOPER_CONTROL_ROOM_DEBUG", "false").lower() == "true"
+MODEL_RETRY_COUNT = int(os.getenv("DEVELOPER_CONTROL_ROOM_MODEL_RETRY_COUNT", "3"))
+MODEL_RETRY_DELAY_SECONDS = float(os.getenv("DEVELOPER_CONTROL_ROOM_MODEL_RETRY_DELAY_SECONDS", "2"))
 
 
 def debug_log(message: str) -> None:
@@ -115,25 +118,32 @@ def get_model_action(
     episode_memory: str = "",
 ) -> Optional[dict[str, Any]]:
     user_prompt = build_user_prompt(step, observation, history, episode_memory)
-    try:
-        if os.getenv("DEVELOPER_CONTROL_ROOM_FORCE_MODEL_TIMEOUT", "false").lower() == "true":
-            raise TimeoutError("Forced model timeout for fallback-path validation.")
-        completion = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=timeout_seconds,
-            stream=False,
-        )
-        text = (completion.choices[0].message.content or "").strip()
-        return parse_model_action(text)
-    except Exception as exc:
-        debug_log(f"[DEBUG] Model request failed: {exc}")
-        raise
+    last_exc: Exception | None = None
+    attempts = max(1, MODEL_RETRY_COUNT)
+    for attempt in range(1, attempts + 1):
+        try:
+            if os.getenv("DEVELOPER_CONTROL_ROOM_FORCE_MODEL_TIMEOUT", "false").lower() == "true":
+                raise TimeoutError("Forced model timeout for fallback-path validation.")
+            completion = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout_seconds,
+                stream=False,
+            )
+            text = (completion.choices[0].message.content or "").strip()
+            return parse_model_action(text)
+        except Exception as exc:
+            last_exc = exc
+            debug_log(f"[DEBUG] Model request failed on attempt {attempt}/{attempts}: {exc}")
+            if attempt < attempts:
+                time.sleep(MODEL_RETRY_DELAY_SECONDS)
+    assert last_exc is not None
+    raise RuntimeError(f"Model request failed after {attempts} attempts") from last_exc
 
 
 def action_is_valid(action: Optional[dict[str, Any]], observation: Any) -> bool:

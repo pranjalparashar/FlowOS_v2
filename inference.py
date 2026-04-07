@@ -281,6 +281,7 @@ async def run_task(
         debug_log(f"[DEBUG] task run failed: {exc}")
         success = False
         score = 0.0
+        raise
 
     finally:
         try:
