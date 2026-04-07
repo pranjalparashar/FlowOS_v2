@@ -238,7 +238,7 @@ The root [inference.py](/Users/pranjalparashar/Desktop/hackz/cw-apr1/control-roo
 
 - `API_BASE_URL`
 - `MODEL_NAME`
-- `HF_TOKEN`
+- `API_KEY`
 
 The benchmark-specific helper logic lives in [baseline.py](/Users/pranjalparashar/Desktop/hackz/cw-apr1/control-room/developer_control_room/baseline.py):
 

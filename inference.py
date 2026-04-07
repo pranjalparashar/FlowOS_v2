@@ -5,7 +5,7 @@ MANDATORY
 - Before submitting, ensure the following variables are defined in your environment configuration:
     API_BASE_URL   The API endpoint for the LLM.
     MODEL_NAME     The model identifier to use for inference.
-    HF_TOKEN       Your Hugging Face / API key.
+    API_KEY        The injected API key for the provided LLM proxy.
     LOCAL_IMAGE_NAME The name of the local image to use for the environment if you are using from_docker_image()
                      method
 
@@ -70,7 +70,7 @@ load_env_file()
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")
 DEFAULT_ENV_URL = "https://praanjal-control-room.hf.space"
 ENV_URL = os.getenv("ENV_URL") or DEFAULT_ENV_URL
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
+API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
