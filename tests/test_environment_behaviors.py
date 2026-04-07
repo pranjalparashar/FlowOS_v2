@@ -183,26 +183,22 @@ def test_reset_produces_clean_state() -> None:
     assert fresh.last_action_error is None
 
 
-def test_forced_model_timeout_raises(monkeypatch) -> None:
+def test_forced_model_timeout_returns_none(monkeypatch) -> None:
     env = DeveloperControlRoomEnvironment()
     observation = env.reset(task_id="repair_data_transform", scenario_index=0)
 
     monkeypatch.setenv("DEVELOPER_CONTROL_ROOM_FORCE_MODEL_TIMEOUT", "true")
-    try:
-        get_model_action(
-            client=None,  # type: ignore[arg-type]
-            model_name="demo-model",
-            temperature=0.2,
-            max_tokens=32,
-            timeout_seconds=0.01,
-            step=1,
-            observation=observation,
-            history=[],
-        )
-    except TimeoutError:
-        pass
-    else:
-        raise AssertionError("Expected forced model timeout to raise")
+    result = get_model_action(
+        client=None,  # type: ignore[arg-type]
+        model_name="demo-model",
+        temperature=0.2,
+        max_tokens=32,
+        timeout_seconds=0.01,
+        step=1,
+        observation=observation,
+        history=[],
+    )
+    assert result is None
 
 
 def test_seeded_variants_are_deterministic_and_change_literals() -> None:

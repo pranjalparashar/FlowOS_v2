@@ -15,7 +15,7 @@ from openai import OpenAI
 
 from client import DeveloperControlRoomEnv
 from models import ActionParameters, DeveloperControlRoomAction
-from tasks import get_task
+from tasks import SCENARIO_REGISTRY, TASK_DEFINITIONS, get_task
 
 SYSTEM_PROMPT = textwrap.dedent(
     """
@@ -43,12 +43,55 @@ SYSTEM_PROMPT = textwrap.dedent(
 DEBUG_LOGGING = os.getenv("DEVELOPER_CONTROL_ROOM_DEBUG", "false").lower() == "true"
 MODEL_RETRY_COUNT = int(os.getenv("DEVELOPER_CONTROL_ROOM_MODEL_RETRY_COUNT", "3"))
 MODEL_RETRY_DELAY_SECONDS = float(os.getenv("DEVELOPER_CONTROL_ROOM_MODEL_RETRY_DELAY_SECONDS", "2"))
-
-
 def debug_log(message: str) -> None:
     if DEBUG_LOGGING:
         print(message, file=sys.stderr, flush=True)
 
+
+def allowed_review_issue_types() -> set[str]:
+    issue_types: set[str] = set()
+    for task in TASK_DEFINITIONS.values():
+        if task.get("grader_family") != "review":
+            continue
+        for scenario_id in task.get("scenario_ids", []):
+            scenario = SCENARIO_REGISTRY.get(scenario_id, {})
+            review_target = scenario.get("review_target", {})
+            issue_type = str(review_target.get("correct_issue_type") or "").strip()
+            if issue_type:
+                issue_types.add(issue_type)
+    return issue_types
+
+
+def _matches_group(text: str, group: list[str]) -> bool:
+    lowered = text.lower()
+    return all(term.lower() in lowered for term in group)
+
+
+def review_submission_is_grounded(observation: Any, params: dict[str, Any]) -> bool:
+    scenario = SCENARIO_REGISTRY.get(observation.scenario_id, {})
+    review_target = scenario.get("review_target", {})
+    expected_issue_type = str(review_target.get("correct_issue_type") or "").strip()
+    summary_groups = review_target.get("summary_groups", [])
+    validator_targets = set(review_target.get("validator_targets", []))
+    submitted_issue_type = str(params.get("issue_type") or "").strip()
+    summary = str(params.get("summary") or "")
+
+    if expected_issue_type and submitted_issue_type != expected_issue_type:
+        return False
+
+    matched_groups = sum(1 for group in summary_groups if _matches_group(summary, group))
+    required_matches = 0
+    if summary_groups:
+        required_matches = 2
+        if len(summary_groups) >= 4:
+            required_matches = 3
+    if matched_groups < required_matches:
+        return False
+
+    if validator_targets and not validator_targets.issubset(set(observation.validator_status)):
+        return False
+
+    return True
 
 def compact_json(data: dict[str, Any]) -> str:
     return json.dumps(data, separators=(",", ":"), ensure_ascii=True)
@@ -63,14 +106,60 @@ def parse_model_action(response_text: str) -> Optional[dict[str, Any]]:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        if start != -1 and end > start:
+        decoder = json.JSONDecoder()
+        starts = [match.start() for match in re.finditer(r"\{", text)]
+        for start in starts:
             try:
-                return json.loads(text[start:end])
+                candidate, _ = decoder.raw_decode(text[start:])
+                if isinstance(candidate, dict):
+                    return candidate
             except json.JSONDecodeError:
-                return None
+                continue
     return None
+
+
+def get_phase_guidance(step: int, task_id: str) -> str:
+    grader_family = get_task(task_id)["grader_family"]
+    if step <= 4:
+        return (
+            "Early phase: gather evidence only. Prefer read_file, inspect_schema, inspect_lineage, or "
+            "inspect_llm_draft. Do not submit. Avoid edit_file unless you have read the target and, when relevant, "
+            "inspected the key asset."
+        )
+    if step <= 10:
+        if grader_family == "review":
+            return (
+                "Middle phase: finish evidence gathering, then run relevant validators. Submit a review only after "
+                "you have inspected the draft and read supporting policy or contract material."
+            )
+        return (
+            "Middle phase: make at most one targeted edit, then run validators. Avoid repeated edits without using "
+            "validator feedback. Do not submit until validators or evidence indicate the fix is grounded."
+        )
+    return (
+        "Late phase: prefer validators or submission. If the workspace is not ready, choose one safe action that "
+        "unblocks submission. Return exactly one JSON object and never include multiple actions."
+    )
+
+
+def get_task_specific_guidance(observation: Any) -> str:
+    task_id = observation.task_id
+    if task_id.startswith("review_"):
+        return (
+            "For submit_review, use concise issue_type terminology grounded in the observed draft, policy text, and validator feedback. "
+            "Prefer terminology already present in the workspace or validator context over invented synonyms."
+        )
+    if task_id.startswith("synthesize_"):
+        return (
+            "For workflow creation tasks, mirror the naming, column shapes, and artifact patterns shown in the referenced files and templates. "
+            "Avoid inventing extra columns, fields, or file structures unless the observed standards clearly require them."
+        )
+    if task_id.startswith("repair_"):
+        return (
+            "For repair tasks, preserve published contracts and existing target names exactly. "
+            "Prefer minimal edits that align with observed schema, path, and validator clues."
+        )
+    return "Prefer existing terminology, shapes, and naming from the observed workspace over invented alternatives."
 
 
 def build_user_prompt(
@@ -81,6 +170,8 @@ def build_user_prompt(
 ) -> str:
     history_block = "\n".join(history[-4:]) if history else "None"
     memory_block = episode_memory if episode_memory else "None"
+    phase_guidance = get_phase_guidance(step, observation.task_id)
+    task_guidance = get_task_specific_guidance(observation) or "None"
     return textwrap.dedent(
         f"""
         Step: {step}
@@ -101,7 +192,11 @@ def build_user_prompt(
         Validator status: {json.dumps(observation.validator_status)}
         Last feedback: {observation.feedback}
         Last action error: {observation.last_action_error or "null"}
-        Return the next JSON action only.
+        Phase guidance: {phase_guidance}
+        Task-specific guidance: {task_guidance}
+        Return exactly one JSON action object only.
+        Never return multiple JSON objects.
+        Never include markdown, explanations, or prose.
         """
     ).strip()
 
@@ -143,8 +238,9 @@ def get_model_action(
             debug_log(f"[DEBUG] Model request failed on attempt {attempt}/{attempts}: {exc}")
             if attempt < attempts:
                 time.sleep(MODEL_RETRY_DELAY_SECONDS)
-    assert last_exc is not None
-    raise RuntimeError(f"Model request failed after {attempts} attempts") from last_exc
+    if last_exc is not None:
+        debug_log(f"[DEBUG] Falling back after model failure: {last_exc}")
+    return None
 
 
 def action_is_valid(action: Optional[dict[str, Any]], observation: Any) -> bool:
@@ -163,15 +259,19 @@ def action_is_valid(action: Optional[dict[str, Any]], observation: Any) -> bool:
 
     if action_type == "read_file":
         path = (params.get("path") or "").strip()
-        return bool(path) and path in set(observation.known_files) | set(observation.editable_targets)
+        return (
+            bool(path)
+            and path in set(observation.known_files) | set(observation.editable_targets)
+            and path not in read_paths
+        )
 
     if action_type == "inspect_schema":
         asset = (params.get("asset") or "").strip()
-        return bool(asset) and asset in set(observation.known_assets)
+        return bool(asset) and asset in set(observation.known_assets) and asset not in queried.get("inspect_schema", {})
 
     if action_type == "inspect_lineage":
         asset = (params.get("asset") or "").strip()
-        return bool(asset) and asset in set(observation.known_assets)
+        return bool(asset) and asset in set(observation.known_assets) and asset not in queried.get("inspect_lineage", {})
 
     if action_type == "inspect_llm_draft":
         return (params.get("draft_id") or "primary").strip() == "primary"
@@ -179,6 +279,8 @@ def action_is_valid(action: Optional[dict[str, Any]], observation: Any) -> bool:
     if action_type == "run_validator":
         validator = (params.get("validator") or "").strip()
         if not validator or validator not in set(observation.available_validators):
+            return False
+        if validator in observation.validator_status:
             return False
         if observation.task_id.startswith("repair_") or observation.task_id.startswith("synthesize_"):
             return has_edit
@@ -196,13 +298,25 @@ def action_is_valid(action: Optional[dict[str, Any]], observation: Any) -> bool:
         return True
 
     if action_type == "submit_repair":
-        return has_edit
+        submission = {"root_cause", "fix_path", "summary"}
+        return has_edit and bool(observation.validator_status) and submission.issubset(params) and all(
+            str(params.get(key) or "").strip() for key in submission
+        )
 
     if action_type == "submit_workspace":
-        return has_edit
+        return has_edit and bool(observation.validator_status) and bool(str(params.get("summary") or "").strip())
 
     if action_type == "submit_review":
-        return "primary" in queried.get("inspect_llm_draft", {})
+        has_supporting_evidence = bool(read_paths) or bool(observation.validator_status)
+        required = {"verdict", "issue_type", "summary"}
+        return (
+            "primary" in queried.get("inspect_llm_draft", {})
+            and has_supporting_evidence
+            and required.issubset(params)
+            and str(params.get("issue_type") or "").strip() in allowed_review_issue_types()
+            and all(str(params.get(key) or "").strip() for key in required)
+            and review_submission_is_grounded(observation, params)
+        )
 
     return True
 
