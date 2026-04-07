@@ -40,33 +40,6 @@ from baseline import action_is_valid, build_action, fallback_action, fetch_grade
 from client import DeveloperControlRoomEnv
 from tasks import list_tasks
 
-
-def load_env_file(path: str = ".env") -> None:
-    if not os.path.exists(path):
-        return
-
-    try:
-        from dotenv import load_dotenv  # type: ignore
-
-        load_dotenv(path)
-        return
-    except Exception:
-        pass
-
-    with open(path, "r", encoding="utf-8") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = value
-
-
-load_env_file()
-
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")
 DEFAULT_ENV_URL = "https://praanjal-control-room.hf.space"
 ENV_URL = os.getenv("ENV_URL") or DEFAULT_ENV_URL
