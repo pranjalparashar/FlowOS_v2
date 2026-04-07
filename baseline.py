@@ -133,7 +133,7 @@ def get_model_action(
         return parse_model_action(text)
     except Exception as exc:
         debug_log(f"[DEBUG] Model request failed: {exc}")
-        return None
+        raise
 
 
 def action_is_valid(action: Optional[dict[str, Any]], observation: Any) -> bool:
