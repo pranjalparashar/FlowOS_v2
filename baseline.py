@@ -136,6 +136,7 @@ def get_model_action(
                 stream=False,
             )
             text = (completion.choices[0].message.content or "").strip()
+            debug_log(f"BASELINE:: LLM IS BEING CALLED!")
             return parse_model_action(text)
         except Exception as exc:
             last_exc = exc

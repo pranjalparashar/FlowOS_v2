@@ -27,10 +27,9 @@ STDOUT FORMAT
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
-import tempfile
+import traceback
 from typing import Any, List, Optional
 
 from openai import OpenAI
@@ -39,7 +38,8 @@ from baseline import action_is_valid, build_action, fallback_action, fetch_grade
 from client import DeveloperControlRoomEnv
 from tasks import list_tasks
 
-DEFAULT_ENV_URL = "https://praanjal-control-room.hf.space"
+# DEFAULT_ENV_URL = "https://praanjal-control-room.hf.space"
+DEFAULT_ENV_URL = "http://localhost:7860"
 ENV_URL = os.getenv("ENV_URL") or DEFAULT_ENV_URL
 API_KEY = os.getenv("API_KEY")
 
@@ -48,7 +48,7 @@ MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 TASK_NAME = os.getenv("DEVELOPER_CONTROL_ROOM_TASK")
 BENCHMARK = os.getenv("DEVELOPER_CONTROL_ROOM_BENCHMARK", "developer_control_room")
 MAX_STEPS = int(os.getenv("DEVELOPER_CONTROL_ROOM_MAX_STEPS", "14"))
-DEFAULT_MODEL_STEPS = 2
+DEFAULT_MODEL_STEPS = 14
 MAX_MODEL_STEPS = int(
     os.getenv("DEVELOPER_CONTROL_ROOM_MAX_MODEL_STEPS", str(DEFAULT_MODEL_STEPS))
 )
@@ -60,13 +60,7 @@ SCENARIO_SEED = int(SCENARIO_SEED_RAW) if SCENARIO_SEED_RAW not in (None, "") el
 TEMPERATURE = 0.2
 MAX_TOKENS = 250
 MODEL_TIMEOUT_SECONDS = float(os.getenv("DEVELOPER_CONTROL_ROOM_MODEL_TIMEOUT_SECONDS", "20"))
-ENABLE_EPISODE_MEMORY = os.getenv("DEVELOPER_CONTROL_ROOM_ENABLE_EPISODE_MEMORY", "false").lower() == "true"
 DEBUG_LOGGING = os.getenv("DEVELOPER_CONTROL_ROOM_DEBUG", "false").lower() == "true"
-EPISODE_MEMORY_PATH = os.getenv(
-    "DEVELOPER_CONTROL_ROOM_EPISODE_MEMORY_PATH",
-    os.path.join(tempfile.gettempdir(), "developer_control_room_episode_memory.json"),
-)
-EPISODE_MEMORY_LIMIT = int(os.getenv("DEVELOPER_CONTROL_ROOM_EPISODE_MEMORY_LIMIT", "6"))
 
 
 def log_start(task: str, env: str, model: str) -> None:
@@ -125,70 +119,6 @@ def format_action_str(action_dict: Optional[dict[str, Any]]) -> str:
     return f"{action_type}({','.join(parts)})"
 
 
-def load_episode_memory() -> list[dict[str, Any]]:
-    if not ENABLE_EPISODE_MEMORY or not os.path.exists(EPISODE_MEMORY_PATH):
-        return []
-    try:
-        with open(EPISODE_MEMORY_PATH, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        if isinstance(payload, list):
-            return [item for item in payload if isinstance(item, dict)]
-    except Exception as exc:
-        debug_log(f"[DEBUG] episode memory load failed: {exc}")
-    return []
-
-
-def save_episode_memory(entries: list[dict[str, Any]]) -> None:
-    if not ENABLE_EPISODE_MEMORY:
-        return
-    try:
-        with open(EPISODE_MEMORY_PATH, "w", encoding="utf-8") as handle:
-            json.dump(entries[-EPISODE_MEMORY_LIMIT:], handle, ensure_ascii=True, indent=2)
-    except Exception as exc:
-        debug_log(f"[DEBUG] episode memory save failed: {exc}")
-
-
-def summarize_episode_memory(entries: list[dict[str, Any]]) -> str:
-    if not ENABLE_EPISODE_MEMORY or not entries:
-        return ""
-    recent = entries[-min(3, len(entries)) :]
-    lines: list[str] = []
-    for item in recent:
-        lines.append(
-            f"- task={item.get('task_id')} scenario={item.get('scenario_id')} "
-            f"solved={str(bool(item.get('solved', False))).lower()} "
-            f"score={float(item.get('score', 0.0)):.2f} takeaway={item.get('takeaway', '')}"
-        )
-    return "\n".join(lines)
-
-
-def record_episode_memory(
-    entries: list[dict[str, Any]],
-    task_name: str,
-    scenario_id: str | None,
-    solved: bool,
-    score: float,
-    history: list[str],
-) -> list[dict[str, Any]]:
-    if not ENABLE_EPISODE_MEMORY:
-        return entries
-    takeaway = ""
-    if solved:
-        takeaway = "Pattern solved successfully; repeat similar investigation and validation ordering."
-    elif history:
-        takeaway = "Recent attempt stayed partial; gather grounding evidence earlier and validate before submitting."
-    entry = {
-        "task_id": task_name,
-        "scenario_id": scenario_id or "unknown",
-        "solved": bool(solved),
-        "score": min(0.99, max(0.01, score)),
-        "takeaway": takeaway,
-        "actions": history[-4:],
-    }
-    updated = entries + [entry]
-    return updated[-EPISODE_MEMORY_LIMIT:]
-
-
 async def create_env() -> DeveloperControlRoomEnv:
     if ENV_URL:
         env = DeveloperControlRoomEnv(base_url=ENV_URL)
@@ -200,10 +130,9 @@ async def create_env() -> DeveloperControlRoomEnv:
 async def run_task(
     client: OpenAI,
     task_name: str,
-    memory_entries: list[dict[str, Any]],
     scenario_index: int | None = None,
     scenario_seed: int | None = None,
-) -> list[dict[str, Any]]:
+) -> None:
     env: DeveloperControlRoomEnv | None = None
     history: List[str] = []
     rewards: List[float] = []
@@ -224,8 +153,6 @@ async def run_task(
         result = await env.reset(**reset_kwargs)
         observation = result.observation
         scenario_id = observation.scenario_id
-        episode_memory = summarize_episode_memory(memory_entries)
-
         for step in range(1, MAX_STEPS + 1):
             if result.done:
                 break
@@ -241,7 +168,7 @@ async def run_task(
                     step,
                     observation,
                     history,
-                    episode_memory,
+                    "",
                 )
             if not action_is_valid(action_dict, observation):
                 action_dict = fallback_action(task_name, observation)
@@ -275,8 +202,10 @@ async def run_task(
         success = grader_result["solved"]
     except Exception as exc:
         debug_log(f"[DEBUG] task run failed: {exc}")
+        debug_log(traceback.format_exc().rstrip())
         success = False
         score = 0.0
+        raise
 
     finally:
         try:
@@ -285,12 +214,10 @@ async def run_task(
         except Exception as exc:
             debug_log(f"[DEBUG] env.close() error (container cleanup): {exc}")
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
-    return record_episode_memory(memory_entries, task_name, scenario_id, success, score, history)
 
 
 async def main() -> None:
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-    memory_entries = load_episode_memory()
     tasks = list_tasks()
     selected_tasks = [task for task in tasks if task["id"] == TASK_NAME] if TASK_NAME else tasks
 
@@ -299,28 +226,24 @@ async def main() -> None:
         if RUN_ALL_SCENARIOS:
             for scenario_index in range(task["scenarios"]):
                 scenario_seed = None if SCENARIO_SEED is None else SCENARIO_SEED + scenario_index + task_offset
-                memory_entries = await run_task(
+                await run_task(
                     client,
                     task_name,
-                    memory_entries,
                     scenario_index=scenario_index,
                     scenario_seed=scenario_seed,
                 )
-                save_episode_memory(memory_entries)
             continue
 
         scenario_seed = None
         if SCENARIO_INDEX is None and SCENARIO_SEED is not None:
             scenario_seed = SCENARIO_SEED + task_offset
 
-        memory_entries = await run_task(
+        await run_task(
             client,
             task_name,
-            memory_entries,
             scenario_index=SCENARIO_INDEX,
             scenario_seed=scenario_seed,
         )
-        save_episode_memory(memory_entries)
 
 
 if __name__ == "__main__":
@@ -328,4 +251,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     except Exception as exc:
         debug_log(f"[DEBUG] inference failed: {exc}")
+        debug_log(traceback.format_exc().rstrip())
         raise SystemExit(1)
