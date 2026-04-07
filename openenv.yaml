@@ -5,11 +5,11 @@ runtime: fastapi
 app: server.app:app
 port: 7860
 description: >
-  OpenEnv benchmark for AI developer assistants operating in a simulated
-  data-platform workspace. Agents repair broken pipelines, review unsafe
-  LLM-generated patches, and synthesize reporting or data-product assets
-  from natural-language requests while respecting schema, governance, and
-  downstream contracts.
+  FlowOS is an end-to-end benchmark for AI agents operating in a realistic
+  production engineering workspace. Agents repair broken workflows, review
+  unsafe LLM-generated patches, and synthesize reporting or data-product
+  assets from natural-language requests while respecting schema,
+  governance, and downstream contracts.
 authors:
   - name: Pranjal Parashar
 license: MIT

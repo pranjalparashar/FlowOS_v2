@@ -1,4 +1,4 @@
-"""Custom Gradio UI for the Developer Control Room Space."""
+"""Custom Gradio UI for the FlowOS Space."""
 
 from __future__ import annotations
 
@@ -24,12 +24,12 @@ def build_developer_control_room_ui(
     action_fields: List[Dict[str, Any]],
     metadata: Optional[Any],
     is_chat_env: bool,
-    title: str = "Developer Control Room",
+    title: str = "FlowOS",
     quick_start_md: Optional[str] = None,
 ) -> gr.Blocks:
     del action_fields, is_chat_env
 
-    display_title = metadata.name if metadata and getattr(metadata, "name", None) else title
+    display_title = title
 
     css = """
     :root {
@@ -195,11 +195,11 @@ def build_developer_control_room_ui(
         gr.HTML(
             f"""
             <section class="dcr-hero">
-              <div class="dcr-kicker">Control Room / OpenEnv / Interactive Workspace</div>
+              <div class="dcr-kicker">FlowOS / Interactive Workspace / End-to-End Ops</div>
               <div class="dcr-title">{display_title}</div>
               <div class="dcr-subtitle">
-                Explore pipeline repair, LLM patch review, and workflow shipping in one live environment.
-                Same page, cleaner flow, better atmosphere.
+                Explore repair, review, and shipping in one live operating environment.
+                FlowOS is built to evaluate how AI agents move real work from broken to shipped.
               </div>
             </section>
             """
@@ -210,10 +210,17 @@ def build_developer_control_room_ui(
                 gr.HTML("<div class='dcr-chip-row'><span class='dcr-chip'><strong>Port</strong> 7860</span><span class='dcr-chip'><strong>Mode</strong> Single-page UI</span></div>")
                 with gr.Group(elem_classes="dcr-panel"):
                     gr.HTML("<div class='dcr-panel-title'>Scenario Control</div>")
-                    gr.HTML("<div class='dcr-side-note'>Pick a task, reset the episode, then drive the env with direct JSON actions.</div>")
+                    gr.HTML("<div class='dcr-side-note'>Pick a FlowOS task, reset the episode, then drive the environment with direct JSON actions.</div>")
                     task_id = gr.Dropdown(
-                        choices=["pipeline_repair", "llm_patch_review", "workflow_shipping"],
-                        value="pipeline_repair",
+                        choices=[
+                            "repair_data_transform",
+                            "repair_pipeline_execution",
+                            "review_ai_patch_safety",
+                            "review_ai_patch_correctness",
+                            "synthesize_reporting_asset",
+                            "synthesize_data_product",
+                        ],
+                        value="repair_data_transform",
                         label="Task",
                     )
                     scenario_index = gr.Number(value=0, label="Scenario Index", precision=0)
@@ -221,7 +228,7 @@ def build_developer_control_room_ui(
 
                 with gr.Group(elem_classes="dcr-panel"):
                     gr.HTML("<div class='dcr-panel-title'>Action Composer</div>")
-                    gr.HTML("<div class='dcr-side-note'>Use exact action names and JSON params. This is intentionally close to the raw benchmark surface.</div>")
+                    gr.HTML("<div class='dcr-side-note'>Use exact action names and JSON params. This is intentionally close to the raw FlowOS benchmark surface.</div>")
                     action_type = gr.Dropdown(
                         choices=[
                             "search_workspace",

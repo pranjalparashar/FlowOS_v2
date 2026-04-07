@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "openenv-developer_control_room"
 version = "0.1.0"
-description = "Developer Control Room benchmark for OpenEnv"
+description = "FlowOS end-to-end benchmark for production AI agents"
 requires-python = ">=3.10"
 dependencies = [
     "openenv-core[core]>=0.2.2",

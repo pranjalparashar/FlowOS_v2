@@ -133,7 +133,7 @@ def api_info() -> dict:
     return {
         "name": "developer_control_room",
         "version": "0.1.0",
-        "description": "Developer workspace benchmark for OpenEnv",
+        "description": "FlowOS end-to-end benchmark for production AI agents",
         "tasks": [task["id"] for task in list_tasks()],
         "docs": "/docs",
     }
