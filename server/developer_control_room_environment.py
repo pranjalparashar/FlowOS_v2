@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from uuid import uuid4
 
 from openenv.core.env_server.interfaces import Environment
@@ -42,6 +43,7 @@ class DeveloperControlRoomEnvironment(
     SOLVED_TERMINAL_REWARD_BONUS = float(
         os.getenv("DEVELOPER_CONTROL_ROOM_SOLVED_TERMINAL_REWARD_BONUS", "0.10")
     )
+    SERVER_STEP_LOGS = os.getenv("DEVELOPER_CONTROL_ROOM_SERVER_STEP_LOGS", "true").lower() == "true"
 
     def __init__(self) -> None:
         self._task_def: dict = {}
@@ -53,6 +55,29 @@ class DeveloperControlRoomEnvironment(
             scenario_id=None,
         )
         self._ready = False
+
+    def _server_log(self, message: str) -> None:
+        if self.SERVER_STEP_LOGS:
+            print(message, file=sys.stderr, flush=True)
+
+    def _fmt_value(self, value: object) -> str:
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return str(value).lower()
+        if isinstance(value, (int, float)):
+            return str(value)
+        text = str(value).replace("\\", "\\\\").replace("'", "\\'")
+        text = text.replace("\n", "\\n").replace("\r", "\\r")
+        return f"'{text}'"
+
+    def _format_action(self, action: DeveloperControlRoomAction) -> str:
+        payload = action.parameters.model_dump(exclude_none=True)
+        payload.pop("agent_source", None)
+        if not payload:
+            return f"{action.action_type}()"
+        parts = [f"{key}={self._fmt_value(payload[key])}" for key in sorted(payload)]
+        return f"{action.action_type}({','.join(parts)})"
 
     def reset(
         self,
@@ -86,6 +111,9 @@ class DeveloperControlRoomEnvironment(
             last_action_error=None,
         )
         self._ready = True
+        self._server_log(
+            f"[SERVER-START] task={task_id} scenario={self._scenario['scenario_id']} max_steps={self._task_def['max_steps']}"
+        )
         return self._build_observation(reward=0.0, done=False)
 
     def step(
@@ -153,6 +181,19 @@ class DeveloperControlRoomEnvironment(
             reward += self.SOLVED_TERMINAL_REWARD_BONUS
         self._state.cumulative_reward = round(self._state.cumulative_reward + reward, 4)
         self._state.feedback = " | ".join(part for part in feedback if part) or after_result["feedback"]
+
+        source = payload.get("agent_source", "unknown")
+        self._server_log(
+            f"[SERVER-STEP] step={self._state.step_count} scenario={self._state.scenario_id} "
+            f"source={source} action={self._format_action(action)} reward={round(reward, 4):.2f} "
+            f"done={str(self._state.done).lower()} error={self._state.last_action_error or 'null'}"
+        )
+        if self._state.done:
+            self._server_log(
+                f"[SERVER-END] task={self._state.task_id} scenario={self._state.scenario_id} "
+                f"steps={self._state.step_count} total={after_result['total']:.2f} "
+                f"solved={str(after_result.get('solved', False)).lower()}"
+            )
 
         return self._build_observation(
             reward=round(reward, 4),

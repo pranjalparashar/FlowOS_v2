@@ -256,6 +256,17 @@ def action_is_valid(action: Optional[dict[str, Any]], observation: Any) -> bool:
     read_paths = set(queried.get("read_file", {}))
     inspected_assets = set(queried.get("inspect_schema", {})) | set(queried.get("inspect_lineage", {}))
     has_edit = bool(observation.edited_files)
+    repair_all_validators_passed = (
+        observation.task_id.startswith("repair_")
+        and bool(observation.available_validators)
+        and all(
+            observation.validator_status.get(validator, {}).get("passed", False)
+            for validator in observation.available_validators
+        )
+    )
+
+    if repair_all_validators_passed and action_type != "submit_repair":
+        return False
 
     if action_type == "read_file":
         path = (params.get("path") or "").strip()
@@ -299,8 +310,13 @@ def action_is_valid(action: Optional[dict[str, Any]], observation: Any) -> bool:
 
     if action_type == "submit_repair":
         submission = {"root_cause", "fix_path", "summary"}
-        return has_edit and bool(observation.validator_status) and submission.issubset(params) and all(
-            str(params.get(key) or "").strip() for key in submission
+        fix_path = str(params.get("fix_path") or "").strip()
+        return (
+            has_edit
+            and bool(observation.validator_status)
+            and submission.issubset(params)
+            and all(str(params.get(key) or "").strip() for key in submission)
+            and fix_path in set(observation.editable_targets)
         )
 
     if action_type == "submit_workspace":

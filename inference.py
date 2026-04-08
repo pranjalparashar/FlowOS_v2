@@ -119,6 +119,43 @@ def format_action_str(action_dict: Optional[dict[str, Any]]) -> str:
     return f"{action_type}({','.join(parts)})"
 
 
+def action_with_provenance(action_dict: dict[str, Any], source: str) -> dict[str, Any]:
+    params = dict(action_dict.get("parameters", {}))
+    params["agent_source"] = source
+    return {
+        "action_type": action_dict.get("action_type", ""),
+        "parameters": params,
+    }
+
+
+def repair_ready_to_submit(task_name: str, observation: Any) -> bool:
+    if not task_name.startswith("repair_"):
+        return False
+    if not observation.edited_files or not observation.available_validators:
+        return False
+    return all(
+        observation.validator_status.get(validator, {}).get("passed", False)
+        for validator in observation.available_validators
+    )
+
+
+def repeated_failed_repair_edit(task_name: str, observation: Any, action_dict: Optional[dict[str, Any]]) -> bool:
+    if not task_name.startswith("repair_") or not isinstance(action_dict, dict):
+        return False
+    if action_dict.get("action_type") != "edit_file":
+        return False
+    params = action_dict.get("parameters", {})
+    if not isinstance(params, dict):
+        return False
+    path = str(params.get("path") or "").strip()
+    content = str(params.get("content") or "")
+    if not path or path not in observation.edited_files:
+        return False
+    if observation.edited_files.get(path, "") != content:
+        return False
+    return any(not status.get("passed", False) for status in observation.validator_status.values())
+
+
 async def create_env() -> DeveloperControlRoomEnv:
     if ENV_URL:
         env = DeveloperControlRoomEnv(base_url=ENV_URL)
@@ -158,22 +195,37 @@ async def run_task(
                 break
 
             action_dict: Optional[dict[str, Any]] = None
-            if step <= MAX_MODEL_STEPS:
-                action_dict = get_model_action(
-                    client,
-                    MODEL_NAME,
-                    TEMPERATURE,
-                    MAX_TOKENS,
-                    MODEL_TIMEOUT_SECONDS,
-                    step,
-                    observation,
-                    history,
-                    "",
-                )
-            if not action_is_valid(action_dict, observation):
-                action_dict = fallback_action(task_name, observation)
+            action_source = "fallback"
+            try:
+                if repair_ready_to_submit(task_name, observation):
+                    action_dict = fallback_action(task_name, observation)
+                elif step <= MAX_MODEL_STEPS:
+                    action_dict = get_model_action(
+                        client,
+                        MODEL_NAME,
+                        TEMPERATURE,
+                        MAX_TOKENS,
+                        MODEL_TIMEOUT_SECONDS,
+                        step,
+                        observation,
+                        history,
+                        "",
+                    )
+                    if action_dict is not None:
+                        action_source = "llm"
+                        if repeated_failed_repair_edit(task_name, observation, action_dict):
+                            action_dict = None
+                if not action_is_valid(action_dict, observation):
+                    action_source = "fallback_after_llm" if action_dict is not None else "fallback"
+                    action_dict = fallback_action(task_name, observation)
 
-            action = build_action(action_dict)
+                action = build_action(action_with_provenance(action_dict, action_source))
+            except Exception as exc:
+                debug_log(f"[DEBUG] Step {step} action preparation failed: {exc}")
+                debug_log(traceback.format_exc().rstrip())
+                action_source = "fallback_after_error"
+                action_dict = fallback_action(task_name, observation)
+                action = build_action(action_with_provenance(action_dict, action_source))
             result = await env.step(action)
             observation = result.observation
 
