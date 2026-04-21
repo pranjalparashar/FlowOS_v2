@@ -95,6 +95,10 @@ class DeveloperControlRoomObservation(Observation):
         default_factory=list,
         description="Preview rows from the final report output",
     )
+    materialized_artifacts: dict[str, str] = Field(
+        default_factory=dict,
+        description="Generated artifact contents returned by simulation-backed tasks",
+    )
     cumulative_reward: float = Field(
         default=0.0,
         description="Running reward across the episode",
@@ -128,6 +132,7 @@ class DeveloperControlRoomState(State):
     execution_logs: list[str] = Field(default_factory=list)
     output_schema: list[str] = Field(default_factory=list)
     report_preview: list[dict[str, Any]] = Field(default_factory=list)
+    materialized_artifacts: dict[str, str] = Field(default_factory=dict)
     cumulative_reward: float = Field(default=0.0)
     done: bool = Field(default=False)
     feedback: str = Field(default="")

@@ -6,6 +6,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from itertools import cycle, islice
+from pathlib import Path
 from typing import Any, Callable
 
 import requests
@@ -66,6 +67,10 @@ class EpisodeMetrics:
     solved: bool
     steps: int
     transcript: list[dict[str, Any]]
+    materialized_artifacts: dict[str, str]
+    runtime_status: dict[str, Any]
+    output_schema: list[str]
+    report_preview: list[dict[str, Any]]
     prompt_ids: list[int] | None = None
     completion_ids: list[int] | None = None
     logprobs: list[float] | None = None
@@ -228,6 +233,32 @@ def fetch_grader_result(base_url: str) -> dict[str, Any]:
     }
 
 
+def persist_episode_artifacts(base_dir: str | Path, metrics: EpisodeMetrics) -> Path | None:
+    if not metrics.materialized_artifacts and not metrics.runtime_status:
+        return None
+    run_dir = Path(base_dir) / metrics.scenario_id / f"steps_{metrics.steps}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    for relative_path, content in metrics.materialized_artifacts.items():
+        artifact_path = run_dir / relative_path
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(content, encoding="utf-8")
+
+    (run_dir / "runtime_status.json").write_text(
+        json.dumps(metrics.runtime_status, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (run_dir / "output_schema.json").write_text(
+        json.dumps(metrics.output_schema, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (run_dir / "report_preview.json").write_text(
+        json.dumps(metrics.report_preview, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return run_dir
+
+
 async def run_episode_async(
     base_url: str,
     sample: EpisodeSample,
@@ -284,6 +315,10 @@ async def run_episode_async(
             solved=bool(grader["solved"]),
             steps=len(rewards),
             transcript=transcript,
+            materialized_artifacts=dict(getattr(observation, "materialized_artifacts", {})),
+            runtime_status=dict(getattr(observation, "runtime_status", {})),
+            output_schema=list(getattr(observation, "output_schema", [])),
+            report_preview=list(getattr(observation, "report_preview", [])),
             prompt_ids=prompt_ids,
             completion_ids=completion_ids,
             logprobs=logprobs,

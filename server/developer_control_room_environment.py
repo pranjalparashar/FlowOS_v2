@@ -112,6 +112,7 @@ class DeveloperControlRoomEnvironment(
             execution_logs=[],
             output_schema=[],
             report_preview=[],
+            materialized_artifacts={},
             cumulative_reward=0.0,
             done=False,
             feedback="Episode started.",
@@ -295,6 +296,7 @@ class DeveloperControlRoomEnvironment(
                 self._state.execution_logs = list(runtime_status.get("logs", [])) + list(runtime_status.get("errors", []))
                 self._state.output_schema = list(runtime_status.get("output_schema", []))
                 self._state.report_preview = list(runtime_status.get("report_preview", []))
+                self._state.materialized_artifacts = dict(runtime_status.get("materialized_artifacts", {}))
                 if runtime_status.get("errors"):
                     self._state.last_action_error = runtime_status["errors"][-1]
                 self._state.active_role = "fixer"
@@ -402,6 +404,7 @@ class DeveloperControlRoomEnvironment(
             execution_logs=self._state.execution_logs,
             output_schema=self._state.output_schema,
             report_preview=self._state.report_preview,
+            materialized_artifacts=self._state.materialized_artifacts,
             cumulative_reward=self._state.cumulative_reward,
             feedback=feedback or self._state.feedback,
             last_action_error=self._state.last_action_error,

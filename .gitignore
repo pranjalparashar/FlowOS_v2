@@ -9,3 +9,9 @@ __pycache__/
 outputs/
 artifacts/
 .github/
+artifacts/
+outputs/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store

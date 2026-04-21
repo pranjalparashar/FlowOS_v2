@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import csv
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +69,7 @@ def execute_csv_report_runtime(scenario: dict[str, Any], state: dict[str, Any]) 
         "db_path": "",
         "staged_csv_path": "",
         "run_dir": "",
-        "materialized_files": {},
+        "materialized_artifacts": {},
     }
 
     if duckdb is None:
@@ -110,14 +112,9 @@ def execute_csv_report_runtime(scenario: dict[str, Any], state: dict[str, Any]) 
         return result
 
     episode_id = str(state.get("episode_id") or "unknown-episode")
-    workdir = Path.cwd() / "artifacts" / "sim_runs" / episode_id
-    staged_root = workdir / "mock_s3"
+    workdir = Path(tempfile.mkdtemp(prefix=f"flowos-runtime-{episode_id}-"))
     staged_csv = workdir / pipeline["storage_path"]
     db_path = workdir / "runtime.duckdb"
-    pipeline_file = workdir / pipeline_path
-    load_sql_file = workdir / load_sql_path
-    build_sql_file = workdir / build_sql_path
-    report_sql_file = workdir / report_sql_path
     workdir.mkdir(parents=True, exist_ok=True)
     result["db_path"] = str(db_path)
     result["staged_csv_path"] = str(staged_csv)
@@ -126,23 +123,14 @@ def execute_csv_report_runtime(scenario: dict[str, Any], state: dict[str, Any]) 
     try:
         staged_csv.parent.mkdir(parents=True, exist_ok=True)
         staged_csv.write_text(csv_content, encoding="utf-8")
-        pipeline_file.parent.mkdir(parents=True, exist_ok=True)
-        pipeline_file.write_text(pipeline_text, encoding="utf-8")
-        load_sql_file.parent.mkdir(parents=True, exist_ok=True)
-        load_sql_file.write_text(load_sql, encoding="utf-8")
-        build_sql_file.parent.mkdir(parents=True, exist_ok=True)
-        build_sql_file.write_text(build_sql, encoding="utf-8")
-        report_sql_file.parent.mkdir(parents=True, exist_ok=True)
-        report_sql_file.write_text(report_sql, encoding="utf-8")
-        result["materialized_files"] = {
-            "pipeline": str(pipeline_file),
-            "load_sql": str(load_sql_file),
-            "build_sql": str(build_sql_file),
-            "report_sql": str(report_sql_file),
-            "staged_csv": str(staged_csv),
+        result["materialized_artifacts"] = {
+            pipeline_path: pipeline_text,
+            load_sql_path: load_sql,
+            build_sql_path: build_sql,
+            report_sql_path: report_sql,
+            source_csv: csv_content,
         }
         result["checks"]["storage_stage_check"] = True
-        result["logs"].append(f"persisted run artifacts to {workdir}")
         result["logs"].append(f"staged csv to {staged_csv}")
 
         con = duckdb.connect(str(db_path))
@@ -178,7 +166,15 @@ def execute_csv_report_runtime(scenario: dict[str, Any], state: dict[str, Any]) 
         result["succeeded"] = all(result["checks"].values())
         result["logs"].append(f"queried {final_view} rows={result['row_count']}")
         con.close()
+        result["db_path"] = ""
+        result["staged_csv_path"] = ""
+        result["run_dir"] = ""
         return result
     except Exception as exc:
         result["errors"].append(str(exc))
+        result["db_path"] = ""
+        result["staged_csv_path"] = ""
+        result["run_dir"] = ""
         return result
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)

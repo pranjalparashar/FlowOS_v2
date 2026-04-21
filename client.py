@@ -59,6 +59,7 @@ class DeveloperControlRoomEnv(
             execution_logs=obs.get("execution_logs", []),
             output_schema=obs.get("output_schema", []),
             report_preview=obs.get("report_preview", []),
+            materialized_artifacts=obs.get("materialized_artifacts", {}),
             cumulative_reward=obs.get("cumulative_reward", 0.0),
             feedback=obs.get("feedback", ""),
             last_action_error=obs.get("last_action_error"),

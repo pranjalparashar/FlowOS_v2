@@ -21,6 +21,7 @@ try:
         build_turn_prompt,
         parse_action_json,
         parse_sample_prompt,
+        persist_episode_artifacts,
         run_episode,
         samples_to_dataset_prompts,
     )
@@ -35,6 +36,7 @@ except ImportError:
         build_turn_prompt,
         parse_action_json,
         parse_sample_prompt,
+        persist_episode_artifacts,
         run_episode,
         samples_to_dataset_prompts,
     )
@@ -199,6 +201,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     reward_log_path = output_dir / args.reward_log
+    artifact_output_dir = output_dir / "artifacts" / "sim_runs"
     with reward_log_path.open("w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(["episode", "task_id", "scenario_id", "total_reward", "score", "solved", "steps"])
@@ -206,31 +209,34 @@ def main() -> None:
     episode_counter = [0]
     generation_debug_counter = [0]
 
-    def log_episode(metrics: dict[str, Any]) -> None:
+    def log_episode(metrics: Any) -> None:
         episode_counter[0] += 1
         with reward_log_path.open("a", newline="") as handle:
             writer = csv.writer(handle)
             writer.writerow(
                 [
                     episode_counter[0],
-                    metrics["task_id"],
-                    metrics["scenario_id"],
-                    f"{metrics['total_reward']:.4f}",
-                    f"{metrics['score']:.4f}",
-                    str(bool(metrics["solved"])).lower(),
-                    metrics["steps"],
+                    metrics.task_id,
+                    metrics.scenario_id,
+                    f"{metrics.total_reward:.4f}",
+                    f"{metrics.score:.4f}",
+                    str(bool(metrics.solved)).lower(),
+                    metrics.steps,
                 ]
             )
         logger.info(
             "Episode %s task=%s scenario=%s reward=%.3f score=%.3f solved=%s steps=%s",
             episode_counter[0],
-            metrics["task_id"],
-            metrics["scenario_id"],
-            metrics["total_reward"],
-            metrics["score"],
-            metrics["solved"],
-            metrics["steps"],
+            metrics.task_id,
+            metrics.scenario_id,
+            metrics.total_reward,
+            metrics.score,
+            metrics.solved,
+            metrics.steps,
         )
+        artifact_dir = persist_episode_artifacts(artifact_output_dir, metrics)
+        if artifact_dir is not None:
+            logger.info("Saved episode artifacts to %s", artifact_dir)
 
     def rollout_func(prompts: list[str], trainer: Any) -> dict[str, list]:
         prompt_batches: list[list[int]] = []
@@ -297,16 +303,7 @@ def main() -> None:
             total_rewards.append(metrics.total_reward)
             score_rewards.append(metrics.score)
             solved_rewards.append(1.0 if metrics.solved else 0.0)
-            log_episode(
-                {
-                    "task_id": metrics.task_id,
-                    "scenario_id": metrics.scenario_id,
-                    "total_reward": metrics.total_reward,
-                    "score": metrics.score,
-                    "solved": metrics.solved,
-                    "steps": metrics.steps,
-                }
-            )
+            log_episode(metrics)
 
         return {
             "prompt_ids": prompt_batches,
