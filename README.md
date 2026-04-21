@@ -1,5 +1,5 @@
 ---
-title: FlowOS
+title: FlowOS-V2
 emoji: 🛠️
 colorFrom: blue
 colorTo: indigo
