@@ -68,6 +68,7 @@ The benchmark is organized around **6 public task entries** and **3 internal obj
   - `repair`
   - `review`
   - `workflow`
+  new
 
 Difficulty is defined at the **task level**:
 
