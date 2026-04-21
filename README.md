@@ -295,6 +295,54 @@ docker run -d --name developer_control_room -p 7860:7860 developer_control_room:
 python inference.py
 ```
 
+## Training
+
+FlowOS now includes a minimal Colab-friendly GRPO training path built on HF TRL. This path is intentionally lightweight: it trains directly against the existing OpenEnv environment and uses the environment's own dense rewards and terminal scores.
+
+### Install training dependencies
+
+```bash
+pip install -e ".[train]"
+```
+
+### Start the environment server
+
+```bash
+uv run server
+```
+
+### Run a small GRPO training job
+
+```bash
+python train.py \
+  --env-url http://localhost:7860 \
+  --model-id Qwen/Qwen2.5-1.5B-Instruct \
+  --dataset-size 24 \
+  --num-generations 4 \
+  --task-scope all \
+  --report-to none
+```
+
+This creates LoRA checkpoints plus a CSV reward log under `outputs/`.
+
+### Compare base vs tuned policy
+
+```bash
+python eval.py \
+  --env-url http://localhost:7860 \
+  --model-id Qwen/Qwen2.5-1.5B-Instruct \
+  --checkpoint-path outputs/<run-dir>
+```
+
+`eval.py` prints a compact table with:
+
+- average episode reward
+- average grader score
+- solved rate
+- average steps used
+
+For judging, the most useful artifact to screenshot is the before/after eval table together with the reward log produced during training.
+
 ## Validation
 
 The benchmark has also been validated against the submission-style checks:
@@ -312,11 +360,14 @@ developer_control_room/
 ├── openenv.yaml
 ├── pyproject.toml
 ├── inference.py
+├── train.py
+├── eval.py
 ├── baseline.py
 ├── tasks.py
 ├── graders.py
 ├── models.py
 ├── client.py
+├── training_utils.py
 └── server/
     ├── app.py
     └── developer_control_room_environment.py

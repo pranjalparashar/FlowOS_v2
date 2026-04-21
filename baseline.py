@@ -154,6 +154,11 @@ def get_task_specific_guidance(observation: Any) -> str:
             "For workflow creation tasks, mirror the naming, column shapes, and artifact patterns shown in the referenced files and templates. "
             "Avoid inventing extra columns, fields, or file structures unless the observed standards clearly require them."
         )
+    if task_id == "simulate_csv_report_workflow":
+        return (
+            "For the simulation workflow, respect the active role. Builder should create the initial pipeline YAML and SQL artifacts. "
+            "Fixer should use runtime_status, execution_logs, and output_schema to repair the same files until the runtime checks pass."
+        )
     if task_id.startswith("repair_"):
         return (
             "For repair tasks, preserve published contracts and existing target names exactly. "
@@ -192,6 +197,10 @@ def build_user_prompt(
         Validator status: {json.dumps(observation.validator_status)}
         Last feedback: {observation.feedback}
         Last action error: {observation.last_action_error or "null"}
+        Active role: {getattr(observation, "active_role", "builder")}
+        Runtime status: {json.dumps(getattr(observation, "runtime_status", {}))}
+        Execution logs: {json.dumps(getattr(observation, "execution_logs", []))}
+        Output schema: {json.dumps(getattr(observation, "output_schema", []))}
         Phase guidance: {phase_guidance}
         Task-specific guidance: {task_guidance}
         Return exactly one JSON action object only.
@@ -1098,5 +1107,81 @@ def fallback_action(task_name: str, observation: Any) -> dict[str, Any]:
             if validator not in validators:
                 return {"action_type": "run_validator", "parameters": {"validator": validator}}
         return {"action_type": "submit_workspace", "parameters": {"summary": spec["summary"]}}
+
+    if grader_family == "simulation":
+        read_order = [
+            "docs/runtime_contract.md",
+            "templates/report_pipeline_template.yaml",
+            "data/sales_orders.csv",
+        ]
+        for path in read_order:
+            if path in observation.known_files and path not in queried.get("read_file", {}):
+                return {"action_type": "read_file", "parameters": {"path": path}}
+        if "raw.sales_orders_csv" in observation.known_assets and "raw.sales_orders_csv" not in queried.get("inspect_schema", {}):
+            return {"action_type": "inspect_schema", "parameters": {"asset": "raw.sales_orders_csv"}}
+
+        simulation_edits = [
+            (
+                "pipelines/report_job.yaml",
+                """name: customer_daily_report_job
+storage_path: mock_s3/staged/sales_orders.csv
+raw_table: raw_sales_orders
+load_sql: sql/load_raw.sql
+build_sql: sql/build_table.sql
+report_sql: sql/report_view.sql
+final_view: customer_daily_report
+""",
+            ),
+            (
+                "sql/load_raw.sql",
+                """create or replace view staged_sales_orders as
+select
+  order_id,
+  customer_id,
+  cast(order_date as date) as order_date,
+  quantity,
+  unit_price
+from raw_sales_orders;
+""",
+            ),
+            (
+                "sql/build_table.sql",
+                """create or replace table customer_summary as
+select
+  customer_id,
+  order_date,
+  count(*) as order_count,
+  sum(quantity * unit_price) as gross_revenue_usd
+from staged_sales_orders
+group by 1, 2;
+""",
+            ),
+            (
+                "sql/report_view.sql",
+                """create or replace view customer_daily_report as
+select
+  customer_id,
+  order_date,
+  order_count,
+  gross_revenue_usd
+from customer_summary;
+""",
+            ),
+        ]
+
+        for path, content in simulation_edits:
+            if path not in edited:
+                return {"action_type": "edit_file", "parameters": {"path": path, "content": content}}
+
+        for validator in observation.available_validators:
+            if validator not in validators:
+                return {"action_type": "run_validator", "parameters": {"validator": validator}}
+
+        return {
+            "action_type": "submit_workspace",
+            "parameters": {
+                "summary": "Built a DuckDB pipeline from sales_orders.csv and published customer_daily_report."
+            },
+        }
 
     return {"action_type": "search_workspace", "parameters": {"query": observation.developer_request}}

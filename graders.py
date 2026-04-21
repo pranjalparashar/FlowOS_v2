@@ -153,6 +153,20 @@ def evaluate_validator(
             ),
         }
 
+    if kind == "runtime_check":
+        runtime_status = state.get("runtime_status", {})
+        checks = runtime_status.get("checks", {})
+        check_key = spec.get("check_key", "")
+        passed = bool(checks.get(check_key, False))
+        return {
+            "passed": passed,
+            "message": (
+                f"PASS: runtime check {check_key} satisfied."
+                if passed
+                else f"FAIL: runtime check {check_key} not satisfied."
+            ),
+        }
+
     return {"passed": False, "message": f"Unhandled validator kind '{kind}'"}
 
 
@@ -339,11 +353,72 @@ def _grade_workflow_shipping(state: dict, scenario: dict) -> dict[str, Any]:
     }
 
 
+def _grade_simulation_workflow(state: dict, scenario: dict) -> dict[str, Any]:
+    files = _workspace_files(state, scenario)
+    target = scenario["workflow_target"]
+    runtime_status = state.get("runtime_status", {})
+
+    investigation_raw = _investigation_score(
+        state,
+        {(action_type, _norm(name)) for action_type, name in target.get("investigation_targets", [])},
+    )
+    investigation = 0.15 * investigation_raw
+
+    artifact_raw = _artifact_score(files, target)
+    artifact_score = 0.25 * artifact_raw
+
+    checks = runtime_status.get("checks", {})
+    runtime_targets = target.get("solve_validator_targets", [])
+    runtime_hits = sum(1 for name in runtime_targets if checks.get(name, False))
+    runtime_score_raw = runtime_hits / len(runtime_targets) if runtime_targets else 0.0
+    runtime_score = 0.35 * runtime_score_raw
+
+    summary_raw = _summary_score(state.get("submission", {}).get("summary", ""), target.get("summary_groups", []))
+    summary_score = 0.1 * summary_raw
+
+    role_bonus = 0.05 if state.get("active_role") == "fixer" and state.get("runtime_status", {}).get("ran") else 0.0
+
+    expected_columns = (
+        scenario.get("simulation_target", {})
+        or scenario.get("llm_draft", {}).get("simulation_target", {})
+    ).get("required_output_columns", [])
+    output_schema = state.get("output_schema", [])
+    schema_score = 0.1 if list(output_schema) == list(expected_columns) else 0.0
+
+    solved = (
+        state.get("submitted", False)
+        and artifact_raw == 1.0
+        and runtime_score_raw == 1.0
+        and summary_raw >= (2 / 3)
+        and schema_score > 0.0
+        and runtime_status.get("succeeded", False)
+    )
+
+    total = _strict_score(investigation + artifact_score + runtime_score + summary_score + role_bonus + schema_score)
+    return {
+        "total": total,
+        "solved": solved,
+        "breakdown": {
+            "investigation": round(investigation, 4),
+            "artifact_score": round(artifact_score, 4),
+            "runtime_score": round(runtime_score, 4),
+            "schema_score": round(schema_score, 4),
+            "summary_score": round(summary_score, 4),
+            "role_bonus": round(role_bonus, 4),
+        },
+        "feedback": (
+            f"investigation={investigation:.2f} artifact={artifact_score:.2f} "
+            f"runtime={runtime_score:.2f} schema={schema_score:.2f}"
+        ),
+    }
+
+
 def grade(task_id: str, state: dict, scenario: dict) -> dict[str, Any]:
     graders = {
         "repair": _grade_pipeline_repair,
         "review": _grade_llm_patch_review,
         "workflow": _grade_workflow_shipping,
+        "simulation": _grade_simulation_workflow,
     }
     try:
         grader_family = get_grader_family(task_id)

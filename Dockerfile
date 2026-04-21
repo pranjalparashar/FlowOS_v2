@@ -18,9 +18,9 @@ RUN if ! command -v uv >/dev/null 2>&1; then \
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     if [ -f uv.lock ]; then \
-        uv sync --frozen --no-editable; \
+        uv sync --frozen --no-editable --extra train --extra dev; \
     else \
-        uv sync --no-editable; \
+        uv sync --no-editable --extra train --extra dev; \
     fi
 
 FROM ${BASE_IMAGE}

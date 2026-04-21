@@ -12,12 +12,21 @@ dependencies = [
     "openai>=1.52.0",
     "requests>=2.32.0",
     "python-dotenv>=1.0.1",
+    "duckdb>=1.1.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
+]
+train = [
+    "accelerate>=0.34.0",
+    "bitsandbytes>=0.43.0",
+    "datasets>=2.21.0",
+    "peft>=0.13.0",
+    "transformers>=4.45.0",
+    "trl>=0.11.0",
 ]
 
 [project.scripts]

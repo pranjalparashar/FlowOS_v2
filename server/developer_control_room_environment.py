@@ -16,6 +16,7 @@ try:
         DeveloperControlRoomObservation,
         DeveloperControlRoomState,
     )
+    from ..runtime import execute_csv_report_runtime
     from ..tasks import get_scenario, get_task, scenario_count
 except ImportError:
     from graders import evaluate_validator, grade
@@ -24,6 +25,7 @@ except ImportError:
         DeveloperControlRoomObservation,
         DeveloperControlRoomState,
     )
+    from runtime import execute_csv_report_runtime
     from tasks import get_scenario, get_task, scenario_count
 
 
@@ -105,6 +107,11 @@ class DeveloperControlRoomEnvironment(
             validator_status={},
             submission={},
             submitted=False,
+            active_role="builder",
+            runtime_status={},
+            execution_logs=[],
+            output_schema=[],
+            report_preview=[],
             cumulative_reward=0.0,
             done=False,
             feedback="Episode started.",
@@ -282,6 +289,15 @@ class DeveloperControlRoomEnvironment(
                 "preview": content[:200],
                 "length": len(content),
             }
+            if self._state.task_id == "simulate_csv_report_workflow":
+                runtime_status = execute_csv_report_runtime(self._scenario, self._state.model_dump())
+                self._state.runtime_status = runtime_status
+                self._state.execution_logs = list(runtime_status.get("logs", [])) + list(runtime_status.get("errors", []))
+                self._state.output_schema = list(runtime_status.get("output_schema", []))
+                self._state.report_preview = list(runtime_status.get("report_preview", []))
+                if runtime_status.get("errors"):
+                    self._state.last_action_error = runtime_status["errors"][-1]
+                self._state.active_role = "fixer"
             return -0.01, f"edited {path}"
 
         if action_type == "run_validator":
@@ -381,6 +397,11 @@ class DeveloperControlRoomEnvironment(
             queried_data=self._state.queried_data,
             edited_files=self._state.edited_files,
             validator_status=self._state.validator_status,
+            active_role=self._state.active_role,
+            runtime_status=self._state.runtime_status,
+            execution_logs=self._state.execution_logs,
+            output_schema=self._state.output_schema,
+            report_preview=self._state.report_preview,
             cumulative_reward=self._state.cumulative_reward,
             feedback=feedback or self._state.feedback,
             last_action_error=self._state.last_action_error,

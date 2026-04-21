@@ -290,6 +290,28 @@ TASK_DEFINITIONS: dict[str, dict] = {
         "grader_family": "workflow",
         "scenario_ids": ["WS-001", "WS-003"],
     },
+    "simulate_csv_report_workflow": {
+        "id": "simulate_csv_report_workflow",
+        "name": "Task 7: Simulate CSV Report Workflow",
+        "difficulty": "hard",
+        "max_steps": 12,
+        "score_range": [0.0, 1.0],
+        "description": (
+            "Generate and repair a small CSV-to-report data workflow that stages "
+            "source data, loads it into DuckDB, and publishes a final report view."
+        ),
+        "available_actions": [
+            "search_workspace",
+            "read_file",
+            "inspect_schema",
+            "edit_file",
+            "run_validator",
+            "submit_workspace",
+        ],
+        "submission_action": "submit_workspace",
+        "grader_family": "simulation",
+        "scenario_ids": ["SIM-001"],
+    },
 }
 
 ALL_TASKS = TASK_DEFINITIONS
@@ -2337,6 +2359,211 @@ required_columns:
                     "Checks that the reporting schema and alert contract remain aligned for monitoring delivery.",
                     "schema",
                 ),
+            },
+        ),
+    ],
+    "simulation_workflow": [
+        workflow_scenario(
+            scenario_id="SIM-001",
+            developer_request=(
+                "Create a report out of this CSV file. The workflow should stage the raw data, "
+                "load it into the warehouse, and publish a view the user can query."
+            ),
+            workspace_summary=(
+                "This experimental workspace simulates a tiny data platform. Generate the "
+                "pipeline YAML and SQL needed to stage the CSV into mock S3, load it into "
+                "DuckDB, build a customer summary table, and publish the final report view. "
+                "You share the workspace with two roles: Builder starts, Fixer repairs after runtime failures."
+            ),
+            known_files=[
+                "data/sales_orders.csv",
+                "docs/runtime_contract.md",
+                "templates/report_pipeline_template.yaml",
+                "schemas/raw_sales_orders.json",
+            ],
+            editable_targets=[
+                "pipelines/report_job.yaml",
+                "sql/load_raw.sql",
+                "sql/build_table.sql",
+                "sql/report_view.sql",
+            ],
+            known_assets=[
+                "raw.sales_orders_csv",
+                "mart.customer_daily_report",
+            ],
+            available_validators=[
+                "storage_stage_check",
+                "duckdb_load_check",
+                "report_view_check",
+                "output_schema_check",
+            ],
+            files={
+                "data/sales_orders.csv": """order_id,customer_id,order_date,product_category,quantity,unit_price
+1001,C001,2026-04-01,books,2,15.00
+1002,C001,2026-04-01,games,1,25.00
+1003,C002,2026-04-02,books,3,12.50
+1004,C003,2026-04-02,gadgets,1,99.99
+1005,C002,2026-04-03,games,2,30.00
+""",
+                "docs/runtime_contract.md": """# Runtime contract
+
+- The runtime stages `data/sales_orders.csv` into a local mock S3 path.
+- `pipelines/report_job.yaml` must define:
+  - storage_path
+  - raw_table
+  - load_sql
+  - build_sql
+  - report_sql
+  - final_view
+- The runtime auto-loads the staged CSV into the `raw_table`.
+- `sql/load_raw.sql` must create a staged view named `staged_sales_orders`.
+- `sql/build_table.sql` must create a customer-level summary table named `customer_summary`.
+- `sql/report_view.sql` must create a final view named `customer_daily_report`.
+- The final view must expose columns:
+  customer_id, order_date, order_count, gross_revenue_usd
+""",
+                "templates/report_pipeline_template.yaml": """name: customer_daily_report_job
+storage_path: mock_s3/staged/sales_orders.csv
+raw_table: raw_sales_orders
+load_sql: sql/load_raw.sql
+build_sql: sql/build_table.sql
+report_sql: sql/report_view.sql
+final_view: customer_daily_report
+""",
+                "schemas/raw_sales_orders.json": """{
+  "name": "raw_sales_orders",
+  "columns": [
+    {"name": "order_id", "type": "string"},
+    {"name": "customer_id", "type": "string"},
+    {"name": "order_date", "type": "date"},
+    {"name": "product_category", "type": "string"},
+    {"name": "quantity", "type": "integer"},
+    {"name": "unit_price", "type": "float"}
+  ]
+}
+""",
+            },
+            schema_registry={
+                "raw.sales_orders_csv": """asset: raw.sales_orders_csv
+columns:
+  - order_id: string
+  - customer_id: string
+  - order_date: date
+  - product_category: string
+  - quantity: integer
+  - unit_price: float
+""",
+                "mart.customer_daily_report": """asset: mart.customer_daily_report
+required_columns:
+  - customer_id
+  - order_date
+  - order_count
+  - gross_revenue_usd
+""",
+            },
+            workflow_target={
+                "required_artifacts": ["pipeline_yaml", "load_sql", "build_sql", "report_sql"],
+                "artifacts": {
+                    "pipeline_yaml": workflow_artifact(
+                        "pipelines/report_job.yaml",
+                        required_groups=[
+                            ["storage_path: mock_s3/staged/sales_orders.csv"],
+                            ["raw_table: raw_sales_orders"],
+                            ["load_sql: sql/load_raw.sql"],
+                            ["build_sql: sql/build_table.sql"],
+                            ["report_sql: sql/report_view.sql"],
+                            ["final_view: customer_daily_report"],
+                        ],
+                        weight=1.0,
+                    ),
+                    "load_sql": workflow_artifact(
+                        "sql/load_raw.sql",
+                        required_groups=[
+                            ["create", "staged_sales_orders"],
+                            ["raw_sales_orders"],
+                            ["cast(order_date as date)", "try_cast(order_date as date)"],
+                        ],
+                        weight=1.0,
+                    ),
+                    "build_sql": workflow_artifact(
+                        "sql/build_table.sql",
+                        required_groups=[
+                            ["create", "customer_summary"],
+                            ["staged_sales_orders"],
+                            ["quantity * unit_price", "unit_price * quantity"],
+                        ],
+                        weight=1.2,
+                    ),
+                    "report_sql": workflow_artifact(
+                        "sql/report_view.sql",
+                        required_groups=[
+                            ["create", "customer_daily_report"],
+                            ["customer_summary"],
+                            ["order_count"],
+                            ["gross_revenue_usd"],
+                        ],
+                        weight=1.2,
+                    ),
+                },
+                "validator_targets": [
+                    "storage_stage_check",
+                    "duckdb_load_check",
+                    "report_view_check",
+                    "output_schema_check",
+                ],
+                "solve_validator_targets": [
+                    "storage_stage_check",
+                    "duckdb_load_check",
+                    "report_view_check",
+                    "output_schema_check",
+                ],
+                "summary_groups": [
+                    ["sales_orders.csv"],
+                    ["customer_daily_report"],
+                    ["DuckDB", "warehouse"],
+                ],
+                "investigation_targets": [
+                    ("read_file", "docs/runtime_contract.md"),
+                    ("read_file", "data/sales_orders.csv"),
+                    ("inspect_schema", "raw.sales_orders_csv"),
+                ],
+            },
+            validators={
+                "storage_stage_check": {
+                    "description": "Checks that the CSV could be staged into mock storage.",
+                    "kind": "runtime_check",
+                    "check_key": "storage_stage_check",
+                },
+                "duckdb_load_check": {
+                    "description": "Checks that the staged CSV loads into DuckDB.",
+                    "kind": "runtime_check",
+                    "check_key": "duckdb_load_check",
+                },
+                "report_view_check": {
+                    "description": "Checks that the final report view compiles.",
+                    "kind": "runtime_check",
+                    "check_key": "report_view_check",
+                },
+                "output_schema_check": {
+                    "description": "Checks that the final report view exposes the expected schema.",
+                    "kind": "runtime_check",
+                    "check_key": "output_schema_check",
+                },
+            },
+            llm_draft={
+                "simulation_target": {
+                    "source_csv": "data/sales_orders.csv",
+                    "pipeline_path": "pipelines/report_job.yaml",
+                    "load_sql_path": "sql/load_raw.sql",
+                    "build_sql_path": "sql/build_table.sql",
+                    "report_sql_path": "sql/report_view.sql",
+                    "required_output_columns": [
+                        "customer_id",
+                        "order_date",
+                        "order_count",
+                        "gross_revenue_usd",
+                    ],
+                }
             },
         ),
     ],

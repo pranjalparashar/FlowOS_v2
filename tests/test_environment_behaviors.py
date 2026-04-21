@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -11,6 +13,45 @@ from baseline import action_is_valid, build_action, fallback_action, get_model_a
 from graders import grade
 from server.developer_control_room_environment import DeveloperControlRoomEnvironment
 from tasks import get_scenario
+
+
+SIMULATION_PIPELINE_YAML = """name: customer_daily_report_job
+storage_path: mock_s3/staged/sales_orders.csv
+raw_table: raw_sales_orders
+load_sql: sql/load_raw.sql
+build_sql: sql/build_table.sql
+report_sql: sql/report_view.sql
+final_view: customer_daily_report
+"""
+
+SIMULATION_LOAD_SQL = """create or replace view staged_sales_orders as
+select
+  order_id,
+  customer_id,
+  cast(order_date as date) as order_date,
+  quantity,
+  unit_price
+from raw_sales_orders;
+"""
+
+SIMULATION_BUILD_SQL = """create or replace table customer_summary as
+select
+  customer_id,
+  order_date,
+  count(*) as order_count,
+  sum(quantity * unit_price) as gross_revenue_usd
+from staged_sales_orders
+group by 1, 2;
+"""
+
+SIMULATION_REPORT_SQL = """create or replace view customer_daily_report as
+select
+  customer_id,
+  order_date,
+  order_count,
+  gross_revenue_usd
+from customer_summary;
+"""
 
 
 def run_episode_with_fallback(task_id: str, scenario_index: int) -> dict:
@@ -24,6 +65,33 @@ def run_episode_with_fallback(task_id: str, scenario_index: int) -> dict:
         "scenario": env._scenario,
         "grade": grade(task_id, env._state.model_dump(), env._scenario),
     }
+
+
+def _run_simulation_sequence(report_sql: str = SIMULATION_REPORT_SQL) -> dict:
+    env = DeveloperControlRoomEnvironment()
+    observation = env.reset(task_id="simulate_csv_report_workflow", scenario_index=0)
+
+    for action in (
+        {
+            "action_type": "edit_file",
+            "parameters": {"path": "pipelines/report_job.yaml", "content": SIMULATION_PIPELINE_YAML},
+        },
+        {
+            "action_type": "edit_file",
+            "parameters": {"path": "sql/load_raw.sql", "content": SIMULATION_LOAD_SQL},
+        },
+        {
+            "action_type": "edit_file",
+            "parameters": {"path": "sql/build_table.sql", "content": SIMULATION_BUILD_SQL},
+        },
+        {
+            "action_type": "edit_file",
+            "parameters": {"path": "sql/report_view.sql", "content": report_sql},
+        },
+    ):
+        observation = env.step(build_action(action))
+
+    return {"env": env, "observation": observation}
 
 
 def test_repeated_file_reads_are_penalized() -> None:
@@ -255,3 +323,112 @@ def test_solved_episode_gets_terminal_bonus() -> None:
 
     assert observation.done is True
     assert observation.reward >= DeveloperControlRoomEnvironment.SOLVED_TERMINAL_REWARD_BONUS
+
+
+def test_simulation_reset_exposes_runtime_context() -> None:
+    env = DeveloperControlRoomEnvironment()
+    observation = env.reset(task_id="simulate_csv_report_workflow", scenario_index=0)
+
+    assert observation.active_role == "builder"
+    assert "data/sales_orders.csv" in observation.known_files
+    assert "pipelines/report_job.yaml" in observation.editable_targets
+    assert "storage_stage_check" in observation.available_validators
+    assert observation.runtime_status == {}
+
+
+def test_simulation_runtime_happy_path_executes_end_to_end() -> None:
+    pytest.importorskip("duckdb")
+    run = _run_simulation_sequence()
+    env = run["env"]
+    observation = run["observation"]
+
+    assert observation.active_role == "fixer"
+    assert observation.runtime_status.get("succeeded") is True
+    assert observation.output_schema == [
+        "customer_id",
+        "order_date",
+        "order_count",
+        "gross_revenue_usd",
+    ]
+    assert observation.report_preview
+
+    for validator in (
+        "storage_stage_check",
+        "duckdb_load_check",
+        "report_view_check",
+        "output_schema_check",
+    ):
+        observation = env.step(
+            build_action(
+                {
+                    "action_type": "run_validator",
+                    "parameters": {"validator": validator},
+                }
+            )
+        )
+        assert observation.validator_status[validator]["passed"] is True
+
+    observation = env.step(
+        build_action(
+            {
+                "action_type": "submit_workspace",
+                "parameters": {
+                    "summary": "Built a DuckDB pipeline from sales_orders.csv and published customer_daily_report."
+                },
+            }
+        )
+    )
+    final_grade = grade("simulate_csv_report_workflow", env._state.model_dump(), env._scenario)
+
+    assert observation.done is True
+    assert final_grade["solved"] is True
+
+
+def test_simulation_fixer_can_repair_broken_report_view() -> None:
+    pytest.importorskip("duckdb")
+    broken_report_sql = """create or replace view customer_daily_report as
+select
+  customer_id,
+  order_date,
+  order_count,
+  gross_revenue_usd as gross_revenue
+from customer_summary;
+"""
+
+    run = _run_simulation_sequence(report_sql=broken_report_sql)
+    env = run["env"]
+    observation = run["observation"]
+
+    assert observation.active_role == "fixer"
+    assert observation.runtime_status.get("checks", {}).get("report_view_check") is True
+    assert observation.runtime_status.get("checks", {}).get("output_schema_check") is False
+
+    observation = env.step(
+        build_action(
+            {
+                "action_type": "edit_file",
+                "parameters": {"path": "sql/report_view.sql", "content": SIMULATION_REPORT_SQL},
+            }
+        )
+    )
+
+    assert observation.runtime_status.get("succeeded") is True
+    assert observation.output_schema[-1] == "gross_revenue_usd"
+
+
+def test_simulation_sequence_replays_deterministically() -> None:
+    pytest.importorskip("duckdb")
+    first = _run_simulation_sequence()
+    second = _run_simulation_sequence()
+
+    first_env = first["env"]
+    second_env = second["env"]
+
+    assert first_env._state.action_history == second_env._state.action_history
+    assert first_env._state.runtime_status == second_env._state.runtime_status
+    assert first_env._state.report_preview == second_env._state.report_preview
+    assert grade("simulate_csv_report_workflow", first_env._state.model_dump(), first_env._scenario) == grade(
+        "simulate_csv_report_workflow",
+        second_env._state.model_dump(),
+        second_env._scenario,
+    )

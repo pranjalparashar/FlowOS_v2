@@ -78,6 +78,23 @@ class DeveloperControlRoomObservation(Observation):
         default_factory=dict,
         description="Validator pass/fail status accumulated so far",
     )
+    active_role: str = Field(default="builder", description="Current active role in shared-workspace tasks")
+    runtime_status: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Execution/runtime status for simulation-backed tasks",
+    )
+    execution_logs: list[str] = Field(
+        default_factory=list,
+        description="Recent execution log lines from the runtime",
+    )
+    output_schema: list[str] = Field(
+        default_factory=list,
+        description="Current output schema produced by the runtime",
+    )
+    report_preview: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Preview rows from the final report output",
+    )
     cumulative_reward: float = Field(
         default=0.0,
         description="Running reward across the episode",
@@ -106,6 +123,11 @@ class DeveloperControlRoomState(State):
     validator_status: dict[str, dict[str, Any]] = Field(default_factory=dict)
     submission: dict[str, Any] = Field(default_factory=dict)
     submitted: bool = Field(default=False)
+    active_role: str = Field(default="builder")
+    runtime_status: dict[str, Any] = Field(default_factory=dict)
+    execution_logs: list[str] = Field(default_factory=list)
+    output_schema: list[str] = Field(default_factory=list)
+    report_preview: list[dict[str, Any]] = Field(default_factory=list)
     cumulative_reward: float = Field(default=0.0)
     done: bool = Field(default=False)
     feedback: str = Field(default="")
