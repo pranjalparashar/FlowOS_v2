@@ -1111,7 +1111,6 @@ def fallback_action(task_name: str, observation: Any) -> dict[str, Any]:
     if grader_family == "simulation":
         read_order = [
             "docs/runtime_contract.md",
-            "templates/report_pipeline_template.yaml",
             "data/sales_orders.csv",
         ]
         for path in read_order:

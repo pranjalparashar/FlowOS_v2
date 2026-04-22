@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import re
 import statistics
 from typing import Any
 
 try:
+    from .baseline import action_is_valid, fallback_action
     from .training_utils import (
         DEFAULT_MAX_NEW_TOKENS,
         DEFAULT_MAX_TURNS,
@@ -18,6 +21,7 @@ try:
         run_episode,
     )
 except ImportError:
+    from baseline import action_is_valid, fallback_action
     from training_utils import (
         DEFAULT_MAX_NEW_TOKENS,
         DEFAULT_MAX_TURNS,
@@ -29,18 +33,39 @@ except ImportError:
         run_episode,
     )
 
+logger = logging.getLogger(__name__)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate FlowOS policies before and after GRPO fine-tuning")
     parser.add_argument("--model-id", default=DEFAULT_TRAIN_MODEL, help="Base model id")
     parser.add_argument("--checkpoint-path", default=None, help="Optional fine-tuned checkpoint or LoRA adapter path")
+    parser.add_argument(
+        "--backend",
+        default="transformers",
+        choices=("transformers", "unsloth"),
+        help="Model loading backend for evaluation",
+    )
     parser.add_argument("--env-url", default="http://localhost:7860", help="FlowOS OpenEnv server URL")
     parser.add_argument("--task-scope", default="all", help="Task scope: all or comma-separated task ids")
     parser.add_argument("--episodes", type=int, default=12, help="Total evaluation episodes per policy")
     parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS, help="Max environment turns per episode")
     parser.add_argument("--max-new-tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS, help="Max tokens per action generation")
     parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature for evaluation")
+    parser.add_argument("--load-in-4bit", action="store_true", help="Use 4-bit quantized loading when supported")
+    parser.add_argument("--max-seq-length", type=int, default=4096, help="Max sequence length for model loading")
+    parser.add_argument("--debug-actions", action="store_true", help="Log raw completions and fallback actions")
     return parser.parse_args()
+
+
+def _clean_preview(text: str, limit: int = 220) -> str:
+    normalized = text.replace("\u00a0", " ")
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized:
+        return "<empty>"
+    if len(normalized) > limit:
+        return normalized[:limit] + "..."
+    return normalized
 
 
 def apply_chat_template(tokenizer: Any, messages: list[dict[str, str]]) -> str:
@@ -59,7 +84,27 @@ def apply_chat_template(tokenizer: Any, messages: list[dict[str, str]]) -> str:
         )
 
 
-def load_policy(model_id: str, checkpoint_path: str | None) -> tuple[Any, Any, str]:
+def load_policy(
+    model_id: str,
+    checkpoint_path: str | None,
+    backend: str,
+    load_in_4bit: bool,
+    max_seq_length: int,
+) -> tuple[Any, Any, str]:
+    if backend == "unsloth":
+        from unsloth import FastLanguageModel
+
+        model_name = checkpoint_path or model_id
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=model_name,
+            max_seq_length=max_seq_length,
+            dtype=None,
+            load_in_4bit=load_in_4bit,
+        )
+        FastLanguageModel.for_inference(model)
+        label = "tuned" if checkpoint_path else "base"
+        return model, tokenizer, label
+
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -95,7 +140,7 @@ def generate_action(
     user_prompt: str,
     max_new_tokens: int,
     temperature: float,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, str]:
     import torch
 
     prompt_text = apply_chat_template(
@@ -118,7 +163,7 @@ def generate_action(
         )
     completion_ids = generated[0][inputs["input_ids"].shape[1] :]
     text = tokenizer.decode(completion_ids, skip_special_tokens=True)
-    return parse_action_json(text)
+    return parse_action_json(text), text
 
 
 def summarize(results: list[dict[str, Any]]) -> dict[str, float]:
@@ -143,14 +188,32 @@ def run_policy(
     for sample in samples:
         def policy(observation: Any, transcript: list[dict[str, Any]]) -> dict[str, Any]:
             user_prompt = build_turn_prompt(observation, transcript)
-            action = generate_action(
+            action, raw_text = generate_action(
                 model=model,
                 tokenizer=tokenizer,
                 user_prompt=user_prompt,
                 max_new_tokens=args.max_new_tokens,
                 temperature=args.temperature,
             )
-            return {"action": action, "metadata": {"text": ""}}
+            if args.debug_actions:
+                logger.info(
+                    "Eval completion task=%s step=%s text=%s parsed=%s",
+                    sample.task_id,
+                    observation.step_count + 1,
+                    _clean_preview(raw_text),
+                    action,
+                )
+            if not action_is_valid(action, observation):
+                fallback = fallback_action(sample.task_id, observation)
+                if args.debug_actions:
+                    logger.info(
+                        "Eval fallback task=%s step=%s fallback=%s",
+                        sample.task_id,
+                        observation.step_count + 1,
+                        fallback,
+                    )
+                action = fallback
+            return {"action": action, "metadata": {"text": raw_text}}
 
         metrics = run_episode(
             base_url=args.env_url,
@@ -191,14 +254,27 @@ def print_table(rows: list[dict[str, Any]]) -> None:
 
 def main() -> None:
     args = parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    base_model, base_tokenizer, base_label = load_policy(args.model_id, None)
+    base_model, base_tokenizer, base_label = load_policy(
+        args.model_id,
+        None,
+        args.backend,
+        args.load_in_4bit,
+        args.max_seq_length,
+    )
     rows: list[dict[str, Any]] = []
     base_results = run_policy(base_label, base_model, base_tokenizer, args)
     rows.append({"policy": base_label, **summarize(base_results)})
 
     if args.checkpoint_path:
-        tuned_model, tuned_tokenizer, tuned_label = load_policy(args.model_id, args.checkpoint_path)
+        tuned_model, tuned_tokenizer, tuned_label = load_policy(
+            args.model_id,
+            args.checkpoint_path,
+            args.backend,
+            args.load_in_4bit,
+            args.max_seq_length,
+        )
         tuned_results = run_policy(tuned_label, tuned_model, tuned_tokenizer, args)
         rows.append({"policy": tuned_label, **summarize(tuned_results)})
 
