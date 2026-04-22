@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,10 +23,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-accumulation-steps", type=int, default=4, help="Gradient accumulation")
     parser.add_argument("--logging-steps", type=int, default=1, help="Logging interval")
     parser.add_argument("--save-steps", type=int, default=25, help="Checkpoint save interval")
-    parser.add_argument("--max-seq-length", type=int, default=2048, help="Sequence truncation length")
+    parser.add_argument("--max-seq-length", type=int, default=1024, help="Sequence truncation length")
     parser.add_argument("--lora-r", type=int, default=16, help="LoRA rank")
     parser.add_argument("--lora-alpha", type=int, default=32, help="LoRA alpha")
     parser.add_argument("--lora-dropout", type=float, default=0.05, help="LoRA dropout")
+    parser.add_argument("--load-in-4bit", action="store_true", help="Load the base model in 4-bit")
+    parser.add_argument(
+        "--gradient-checkpointing",
+        action="store_true",
+        help="Enable gradient checkpointing to reduce activation memory",
+    )
+    parser.add_argument(
+        "--optim",
+        default="paged_adamw_8bit",
+        help="Transformers Trainer optimizer name",
+    )
     parser.add_argument("--report-to", default="none", choices=("none", "tensorboard", "wandb"), help="Logging backend")
     return parser.parse_args()
 
@@ -127,8 +139,8 @@ class SFTCollator:
 def main() -> None:
     args = parse_args()
 
-    from peft import LoraConfig, get_peft_model
-    from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
+    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, Trainer, TrainingArguments
 
     dataset_path = Path(args.dataset_path)
     rows = load_jsonl(dataset_path)
@@ -139,8 +151,33 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(args.model_id)
+    if torch.cuda.is_available():
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+    bfloat16_supported = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    compute_dtype = torch.bfloat16 if bfloat16_supported else torch.float16
+
+    model_kwargs: dict[str, Any] = {
+        "low_cpu_mem_usage": True,
+        "torch_dtype": compute_dtype if torch.cuda.is_available() else torch.float32,
+    }
+    if args.load_in_4bit:
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=compute_dtype,
+        )
+
+    model = AutoModelForCausalLM.from_pretrained(args.model_id, **model_kwargs)
     model.config.use_cache = False
+    if args.load_in_4bit:
+        model = prepare_model_for_kbit_training(
+            model,
+            use_gradient_checkpointing=args.gradient_checkpointing,
+        )
+    elif args.gradient_checkpointing:
+        model.gradient_checkpointing_enable()
 
     peft_config = LoraConfig(
         r=args.lora_r,
@@ -151,6 +188,8 @@ def main() -> None:
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
     )
     model = get_peft_model(model, peft_config)
+    if args.gradient_checkpointing:
+        model.enable_input_require_grads()
 
     train_dataset = FlowOSSFTDataset(rows, tokenizer, args.max_seq_length)
     collator = SFTCollator(tokenizer)
@@ -165,8 +204,11 @@ def main() -> None:
         save_steps=args.save_steps,
         report_to=[] if args.report_to == "none" else [args.report_to],
         remove_unused_columns=False,
-        bf16=torch.cuda.is_available(),
-        fp16=False,
+        bf16=bfloat16_supported,
+        fp16=torch.cuda.is_available() and not bfloat16_supported,
+        gradient_checkpointing=args.gradient_checkpointing,
+        dataloader_pin_memory=False,
+        optim=args.optim,
     )
 
     trainer = Trainer(
