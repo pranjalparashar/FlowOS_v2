@@ -78,6 +78,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lora-alpha", type=int, default=32, help="LoRA alpha")
     parser.add_argument("--lora-dropout", type=float, default=0.05, help="LoRA dropout")
     parser.add_argument("--reward-log", default="reward_log.csv", help="CSV filename for episode rewards")
+    parser.add_argument("--upload-repo-id", default=None, help="Optional Hugging Face repo id for uploading outputs")
+    parser.add_argument(
+        "--upload-repo-type",
+        default="dataset",
+        choices=("dataset", "model"),
+        help="Repo type for --upload-repo-id",
+    )
+    parser.add_argument(
+        "--upload-path-in-repo",
+        default=None,
+        help="Optional path prefix inside the upload repo (defaults to output dir name)",
+    )
     return parser.parse_args()
 
 
@@ -168,6 +180,19 @@ def reward_score(completions: list[str], **kwargs: Any) -> list[float]:
 def reward_solved(completions: list[str], **kwargs: Any) -> list[float]:
     solved = kwargs.get("solved_reward", [])
     return [float(value) for value in solved] if solved else [0.0] * len(completions)
+
+
+def upload_outputs(output_dir: Path, repo_id: str, repo_type: str, path_in_repo: str | None) -> None:
+    from huggingface_hub import HfApi
+
+    api = HfApi()
+    api.create_repo(repo_id=repo_id, repo_type=repo_type, exist_ok=True)
+    api.upload_folder(
+        repo_id=repo_id,
+        repo_type=repo_type,
+        folder_path=str(output_dir),
+        path_in_repo=path_in_repo or output_dir.name,
+    )
 
 
 def main() -> None:
@@ -355,10 +380,38 @@ def main() -> None:
 
     logger.info("Starting FlowOS GRPO training")
     logger.info("model=%s env=%s dataset_size=%s task_scope=%s", args.model_id, args.env_url, args.dataset_size, args.task_scope)
-    trainer.train()
+    try:
+        trainer.train()
+    finally:
+        try:
+            try:
+                from .plot_rewards import plot as plot_reward_curve
+            except ImportError:
+                from plot_rewards import plot as plot_reward_curve
+            plot_reward_curve(reward_log_path, output_dir / "reward_curve.png")
+            logger.info("Reward curve written to %s", output_dir / "reward_curve.png")
+        except Exception as exc:  # pragma: no cover - plotting should be best effort
+            logger.warning("Could not generate reward curve: %s", exc)
+
     trainer.save_model(str(output_dir))
     logger.info("Training finished. Model saved to %s", output_dir)
     logger.info("Reward log written to %s", reward_log_path)
+
+    if args.upload_repo_id:
+        try:
+            upload_outputs(
+                output_dir=output_dir,
+                repo_id=args.upload_repo_id,
+                repo_type=args.upload_repo_type,
+                path_in_repo=args.upload_path_in_repo,
+            )
+            logger.info(
+                "Uploaded outputs to https://huggingface.co/%s/%s",
+                args.upload_repo_type + "s" if args.upload_repo_type != "model" else "",
+                args.upload_repo_id,
+            )
+        except Exception as exc:  # pragma: no cover - depends on external auth/network
+            logger.warning("Could not upload outputs: %s", exc)
 
 
 if __name__ == "__main__":
