@@ -58,6 +58,11 @@ def _clean_preview(text: str, limit: int = 220) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Minimal Colab-first GRPO training for FlowOS")
     parser.add_argument("--model-id", default=DEFAULT_TRAIN_MODEL, help="Base instruct model to fine-tune")
+    parser.add_argument(
+        "--init-checkpoint",
+        default=None,
+        help="Optional local or Hub PEFT checkpoint to continue GRPO from instead of starting from the base model",
+    )
     parser.add_argument("--env-url", default="http://localhost:7860", help="FlowOS OpenEnv server URL")
     parser.add_argument("--dataset-size", type=int, default=24, help="Number of training episode prompts")
     parser.add_argument("--num-generations", type=int, default=4, help="GRPO generations per prompt")
@@ -218,7 +223,7 @@ def main() -> None:
 
     try:
         from datasets import Dataset
-        from peft import LoraConfig
+        from peft import AutoPeftModelForCausalLM, LoraConfig
         from transformers import AutoTokenizer
         from trl import GRPOConfig, GRPOTrainer
     except ImportError as exc:
@@ -229,7 +234,8 @@ def main() -> None:
     samples = build_episode_samples(args.task_scope, args.dataset_size)
     dataset = Dataset.from_dict({"prompt": samples_to_dataset_prompts(samples)})
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_id)
+    tokenizer_source = args.init_checkpoint or args.model_id
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -363,14 +369,26 @@ def main() -> None:
             "solved_reward": solved_rewards,
         }
 
-    peft_config = LoraConfig(
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        bias="none",
-        task_type="CAUSAL_LM",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-    )
+    trainer_model: Any
+    peft_config: LoraConfig | None
+    if args.init_checkpoint:
+        trainer_model = AutoPeftModelForCausalLM.from_pretrained(
+            args.init_checkpoint,
+            is_trainable=True,
+            low_cpu_mem_usage=True,
+        )
+        trainer_model.config.use_cache = False
+        peft_config = None
+    else:
+        trainer_model = args.model_id
+        peft_config = LoraConfig(
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        )
 
     grpo_config = GRPOConfig(
         output_dir=str(output_dir),
@@ -393,7 +411,7 @@ def main() -> None:
     )
 
     trainer = GRPOTrainer(
-        model=args.model_id,
+        model=trainer_model,
         processing_class=tokenizer,
         reward_funcs=[reward_total, reward_score, reward_solved],
         train_dataset=dataset,
@@ -403,7 +421,14 @@ def main() -> None:
     )
 
     logger.info("Starting FlowOS GRPO training")
-    logger.info("model=%s env=%s dataset_size=%s task_scope=%s", args.model_id, args.env_url, args.dataset_size, args.task_scope)
+    logger.info(
+        "model=%s init_checkpoint=%s env=%s dataset_size=%s task_scope=%s",
+        args.model_id,
+        args.init_checkpoint,
+        args.env_url,
+        args.dataset_size,
+        args.task_scope,
+    )
     try:
         trainer.train()
     finally:
