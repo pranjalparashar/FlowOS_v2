@@ -78,6 +78,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lora-alpha", type=int, default=32, help="LoRA alpha")
     parser.add_argument("--lora-dropout", type=float, default=0.05, help="LoRA dropout")
     parser.add_argument("--reward-log", default="reward_log.csv", help="CSV filename for episode rewards")
+    parser.add_argument(
+        "--fallback-mode",
+        default="warmup",
+        choices=("always", "warmup", "never"),
+        help="How invalid model actions are handled during GRPO rollouts",
+    )
+    parser.add_argument(
+        "--fallback-warmup-episodes",
+        type=int,
+        default=4,
+        help="Number of early episodes that may use fallback when --fallback-mode=warmup",
+    )
     parser.add_argument("--upload-repo-id", default=None, help="Optional Hugging Face repo id for uploading outputs")
     parser.add_argument(
         "--upload-repo-type",
@@ -273,6 +285,7 @@ def main() -> None:
 
         for prompt in prompts:
             sample = parse_sample_prompt(prompt)
+            planned_episode_number = episode_counter[0] + len(total_rewards) + 1
 
             def policy(observation: Any, transcript: list[dict[str, Any]]) -> dict[str, Any]:
                 user_prompt = build_turn_prompt(observation, transcript)
@@ -291,6 +304,7 @@ def main() -> None:
                     temperature=args.temperature,
                 )
                 parsed_action = parse_action_json(generation["text"])
+                valid_action = action_is_valid(parsed_action, observation)
                 if generation_debug_counter[0] < DEBUG_GENERATION_LOG_LIMIT:
                     logger.info(
                         "Raw rollout completion %s task=%s step=%s text=%s parsed=%s",
@@ -301,7 +315,10 @@ def main() -> None:
                         parsed_action,
                     )
                     generation_debug_counter[0] += 1
-                if not action_is_valid(parsed_action, observation):
+                allow_fallback = args.fallback_mode == "always" or (
+                    args.fallback_mode == "warmup" and planned_episode_number <= args.fallback_warmup_episodes
+                )
+                if not valid_action and allow_fallback:
                     fallback = fallback_action(sample.task_id, observation)
                     logger.info(
                         "Using fallback action task=%s step=%s fallback=%s",
@@ -310,6 +327,13 @@ def main() -> None:
                         fallback,
                     )
                     parsed_action = fallback
+                elif not valid_action:
+                    logger.info(
+                        "Invalid action penalized task=%s step=%s fallback_mode=%s",
+                        sample.task_id,
+                        observation.step_count + 1,
+                        args.fallback_mode,
+                    )
                 return {
                     "action": parsed_action,
                     "metadata": generation,
