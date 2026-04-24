@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 
 
 def repair_validator(
@@ -151,6 +152,239 @@ def workflow_scenario(
         "workflow_target": workflow_target,
         "validators": validators,
     }
+
+
+def simulation_scenario(
+    *,
+    scenario_id: str,
+    developer_request: str,
+    workspace_summary: str,
+    source_csv_path: str,
+    source_csv_content: str,
+    raw_table: str,
+    staged_view: str,
+    build_table: str,
+    final_view: str,
+    raw_asset: str,
+    final_asset: str,
+    date_column: str,
+    raw_schema_columns: list[tuple[str, str]],
+    required_output_columns: list[str],
+    build_metric_groups: list[list[str]],
+    report_terms: list[str],
+    correct_load_sql: str,
+    correct_build_sql: str,
+    correct_report_sql: str,
+    starter_files: dict[str, str] | None = None,
+    expected_raw_preview: list[dict[str, object]] | None = None,
+    expected_derived_preview: list[dict[str, object]] | None = None,
+    expected_final_preview: list[dict[str, object]] | None = None,
+) -> dict:
+    starter_files = starter_files or {}
+    template_text = "\n".join(
+        [
+            f"name: {final_view}_job",
+            f"storage_path: mock_s3/staged/{Path(source_csv_path).name}",
+            f"raw_table: {raw_table}",
+            "load_sql: sql/load_raw.sql",
+            "build_sql: sql/build_table.sql",
+            "report_sql: sql/report_view.sql",
+            f"final_view: {final_view}",
+            "",
+        ]
+    )
+    runtime_contract = "\n".join(
+        [
+            "# Runtime contract",
+            "",
+            f"- The runtime stages `{source_csv_path}` into a local mock S3 path.",
+            "- `pipelines/report_job.yaml` must define:",
+            "  - storage_path",
+            "  - raw_table",
+            "  - load_sql",
+            "  - build_sql",
+            "  - report_sql",
+            "  - final_view",
+            "- The runtime auto-loads the staged CSV into the `raw_table`.",
+            f"- `sql/load_raw.sql` must create a staged view named `{staged_view}`.",
+            f"- `sql/build_table.sql` must create a derived table named `{build_table}`.",
+            f"- `sql/report_view.sql` must create a final view named `{final_view}`.",
+            f"- The final view must expose columns: {', '.join(required_output_columns)}",
+            "",
+        ]
+    )
+    schema_json_columns = ",\n".join(
+        f'    {{"name": "{name}", "type": "{type_name}"}}' for name, type_name in raw_schema_columns
+    )
+    schema_yaml_columns = "\n".join(f"  - {name}: {type_name}" for name, type_name in raw_schema_columns)
+
+    files = {
+        source_csv_path: source_csv_content,
+        "docs/runtime_contract.md": runtime_contract,
+        "templates/report_pipeline_template.yaml": template_text,
+        f"schemas/{raw_table}.json": "{\n"
+        f'  "name": "{raw_table}",\n'
+        '  "columns": [\n'
+        f"{schema_json_columns}\n"
+        "  ]\n"
+        "}\n",
+    }
+    files.update(starter_files)
+
+    known_files = [
+        source_csv_path,
+        "docs/runtime_contract.md",
+        "templates/report_pipeline_template.yaml",
+        f"schemas/{raw_table}.json",
+    ]
+    for path in ["pipelines/report_job.yaml", "sql/load_raw.sql", "sql/build_table.sql", "sql/report_view.sql"]:
+        if path in starter_files:
+            known_files.append(path)
+
+    scenario = workflow_scenario(
+        scenario_id=scenario_id,
+        developer_request=developer_request,
+        workspace_summary=workspace_summary,
+        known_files=known_files,
+        editable_targets=[
+            "pipelines/report_job.yaml",
+            "sql/load_raw.sql",
+            "sql/build_table.sql",
+            "sql/report_view.sql",
+        ],
+        known_assets=[raw_asset, final_asset],
+        available_validators=[
+            "storage_stage_check",
+            "duckdb_load_check",
+            "report_view_check",
+            "output_schema_check",
+        ],
+        files=files,
+        schema_registry={
+            raw_asset: f"asset: {raw_asset}\ncolumns:\n{schema_yaml_columns}\n",
+            final_asset: (
+                f"asset: {final_asset}\nrequired_columns:\n"
+                + "".join(f"  - {column}\n" for column in required_output_columns)
+            ),
+        },
+        workflow_target={
+            "required_artifacts": ["pipeline_yaml", "load_sql", "build_sql", "report_sql"],
+            "artifacts": {
+                "pipeline_yaml": workflow_artifact(
+                    "pipelines/report_job.yaml",
+                    required_groups=[
+                        [f"storage_path: mock_s3/staged/{Path(source_csv_path).name}"],
+                        [f"raw_table: {raw_table}"],
+                        ["load_sql: sql/load_raw.sql"],
+                        ["build_sql: sql/build_table.sql"],
+                        ["report_sql: sql/report_view.sql"],
+                        [f"final_view: {final_view}"],
+                    ],
+                    weight=1.0,
+                ),
+                "load_sql": workflow_artifact(
+                    "sql/load_raw.sql",
+                    required_groups=[
+                        ["create", staged_view],
+                        [raw_table],
+                        [f"cast({date_column} as date)", f"try_cast({date_column} as date)", date_column],
+                    ],
+                    weight=1.0,
+                ),
+                "build_sql": workflow_artifact(
+                    "sql/build_table.sql",
+                    required_groups=[
+                        ["create", build_table],
+                        [staged_view],
+                        *build_metric_groups,
+                    ],
+                    weight=1.2,
+                ),
+                "report_sql": workflow_artifact(
+                    "sql/report_view.sql",
+                    required_groups=[
+                        ["create", final_view],
+                        [build_table],
+                        *[[column] for column in required_output_columns],
+                    ],
+                    weight=1.2,
+                ),
+            },
+            "validator_targets": [
+                "storage_stage_check",
+                "duckdb_load_check",
+                "report_view_check",
+                "output_schema_check",
+            ],
+            "solve_validator_targets": [
+                "storage_stage_check",
+                "duckdb_load_check",
+                "report_view_check",
+                "output_schema_check",
+            ],
+            "summary_groups": [
+                [Path(source_csv_path).name],
+                [final_view],
+                *[[term] for term in report_terms],
+            ],
+            "investigation_targets": [
+                ("read_file", "docs/runtime_contract.md"),
+                ("read_file", source_csv_path),
+                ("inspect_schema", raw_asset),
+            ],
+        },
+        validators={
+            "storage_stage_check": {
+                "description": "Checks that the CSV could be staged into mock storage.",
+                "kind": "runtime_check",
+                "check_key": "storage_stage_check",
+            },
+            "duckdb_load_check": {
+                "description": "Checks that the staged CSV loads into DuckDB.",
+                "kind": "runtime_check",
+                "check_key": "duckdb_load_check",
+            },
+            "report_view_check": {
+                "description": "Checks that the final report view compiles.",
+                "kind": "runtime_check",
+                "check_key": "report_view_check",
+            },
+            "output_schema_check": {
+                "description": "Checks that the final report view exposes the expected schema.",
+                "kind": "runtime_check",
+                "check_key": "output_schema_check",
+            },
+        },
+        llm_draft={},
+    )
+    scenario["simulation_target"] = {
+        "source_csv": source_csv_path,
+        "pipeline_path": "pipelines/report_job.yaml",
+        "load_sql_path": "sql/load_raw.sql",
+        "build_sql_path": "sql/build_table.sql",
+        "report_sql_path": "sql/report_view.sql",
+        "required_output_columns": required_output_columns,
+        "expected_raw_table": {
+            "name": raw_table,
+            "preview_rows": expected_raw_preview or [],
+        },
+        "expected_derived_table": {
+            "name": build_table,
+            "preview_rows": expected_derived_preview or [],
+        },
+        "expected_final_view": {
+            "name": final_view,
+            "preview_rows": expected_final_preview or [],
+        },
+    }
+    scenario["llm_draft"]["simulation_target"] = deepcopy(scenario["simulation_target"])
+    scenario["llm_draft"]["reference_solution"] = {
+        "pipeline_yaml": template_text,
+        "load_sql": correct_load_sql,
+        "build_sql": correct_build_sql,
+        "report_sql": correct_report_sql,
+    }
+    return scenario
 
 
 TASK_DEFINITIONS: dict[str, dict] = {
@@ -310,7 +544,7 @@ TASK_DEFINITIONS: dict[str, dict] = {
         ],
         "submission_action": "submit_workspace",
         "grader_family": "simulation",
-        "scenario_ids": ["SIM-001"],
+        "scenario_ids": ["SIM-001", "SIM-002", "SIM-003", "SIM-004", "SIM-005", "SIM-006", "SIM-007"],
     },
 }
 
@@ -2363,66 +2597,333 @@ required_columns:
         ),
     ],
     "simulation_workflow": [
-        workflow_scenario(
+        simulation_scenario(
             scenario_id="SIM-001",
             developer_request=(
-                "Create a report out of this CSV file. The workflow should stage the raw data, "
-                "load it into the warehouse, and publish a view the user can query."
+                "Create a customer daily report from this sales-order CSV. The workflow "
+                "should stage the raw data, load it into the warehouse, and publish a queryable report view."
             ),
             workspace_summary=(
                 "This experimental workspace simulates a tiny data platform. Generate the "
                 "pipeline YAML and SQL needed to stage the CSV into mock S3, load it into "
                 "DuckDB, build a customer summary table, and publish the final report view. "
-                "You share the workspace with two roles: Builder starts, Fixer repairs after runtime failures."
+                "Builder starts with an empty workspace; Fixer repairs after runtime failures."
             ),
-            known_files=[
-                "data/sales_orders.csv",
-                "docs/runtime_contract.md",
-                "templates/report_pipeline_template.yaml",
-                "schemas/raw_sales_orders.json",
-            ],
-            editable_targets=[
-                "pipelines/report_job.yaml",
-                "sql/load_raw.sql",
-                "sql/build_table.sql",
-                "sql/report_view.sql",
-            ],
-            known_assets=[
-                "raw.sales_orders_csv",
-                "mart.customer_daily_report",
-            ],
-            available_validators=[
-                "storage_stage_check",
-                "duckdb_load_check",
-                "report_view_check",
-                "output_schema_check",
-            ],
-            files={
-                "data/sales_orders.csv": """order_id,customer_id,order_date,product_category,quantity,unit_price
+            source_csv_path="data/sales_orders.csv",
+            source_csv_content="""order_id,customer_id,order_date,product_category,quantity,unit_price
 1001,C001,2026-04-01,books,2,15.00
 1002,C001,2026-04-01,games,1,25.00
 1003,C002,2026-04-02,books,3,12.50
 1004,C003,2026-04-02,gadgets,1,99.99
 1005,C002,2026-04-03,games,2,30.00
 """,
-                "docs/runtime_contract.md": """# Runtime contract
-
-- The runtime stages `data/sales_orders.csv` into a local mock S3 path.
-- `pipelines/report_job.yaml` must define:
-  - storage_path
-  - raw_table
-  - load_sql
-  - build_sql
-  - report_sql
-  - final_view
-- The runtime auto-loads the staged CSV into the `raw_table`.
-- `sql/load_raw.sql` must create a staged view named `staged_sales_orders`.
-- `sql/build_table.sql` must create a customer-level summary table named `customer_summary`.
-- `sql/report_view.sql` must create a final view named `customer_daily_report`.
-- The final view must expose columns:
-  customer_id, order_date, order_count, gross_revenue_usd
+            raw_table="raw_sales_orders",
+            staged_view="staged_sales_orders",
+            build_table="customer_summary",
+            final_view="customer_daily_report",
+            raw_asset="raw.sales_orders_csv",
+            final_asset="mart.customer_daily_report",
+            date_column="order_date",
+            raw_schema_columns=[
+                ("order_id", "string"),
+                ("customer_id", "string"),
+                ("order_date", "date"),
+                ("product_category", "string"),
+                ("quantity", "integer"),
+                ("unit_price", "float"),
+            ],
+            required_output_columns=[
+                "customer_id",
+                "order_date",
+                "order_count",
+                "gross_revenue_usd",
+            ],
+            build_metric_groups=[
+                ["quantity * unit_price", "unit_price * quantity"],
+                ["order_count"],
+                ["gross_revenue_usd"],
+            ],
+            report_terms=["customer_daily_report", "DuckDB", "warehouse"],
+            correct_load_sql="""create or replace view staged_sales_orders as
+select
+  order_id,
+  customer_id,
+  cast(order_date as date) as order_date,
+  quantity,
+  unit_price
+from raw_sales_orders;
 """,
-                "templates/report_pipeline_template.yaml": """name: customer_daily_report_job
+            correct_build_sql="""create or replace table customer_summary as
+select
+  customer_id,
+  order_date,
+  count(*) as order_count,
+  sum(quantity * unit_price) as gross_revenue_usd
+from staged_sales_orders
+group by 1, 2;
+""",
+            correct_report_sql="""create or replace view customer_daily_report as
+select
+  customer_id,
+  order_date,
+  order_count,
+  gross_revenue_usd
+from customer_summary;
+""",
+            expected_raw_preview=[
+                {"order_id": "1001", "customer_id": "C001", "order_date": "2026-04-01"},
+                {"order_id": "1002", "customer_id": "C001", "order_date": "2026-04-01"},
+            ],
+            expected_derived_preview=[
+                {"customer_id": "C001", "order_date": "2026-04-01", "order_count": 2},
+            ],
+            expected_final_preview=[
+                {"customer_id": "C001", "order_date": "2026-04-01", "gross_revenue_usd": 55.0},
+            ],
+        ),
+        simulation_scenario(
+            scenario_id="SIM-002",
+            developer_request=(
+                "Generate a plan-tier daily subscription report from this events CSV. "
+                "The pipeline should stage the file, load it into the warehouse, and publish a final daily report."
+            ),
+            workspace_summary=(
+                "Build a small DuckDB workflow that turns subscription events into a daily "
+                "subscription report grouped by plan tier and date."
+            ),
+            source_csv_path="data/subscription_events.csv",
+            source_csv_content="""event_id,account_id,event_date,plan_tier,event_type
+E001,A100,2026-04-01,pro,started
+E002,A101,2026-04-01,basic,started
+E003,A100,2026-04-02,pro,cancelled
+E004,A102,2026-04-02,pro,started
+E005,A103,2026-04-02,basic,started
+E006,A101,2026-04-03,basic,cancelled
+""",
+            raw_table="raw_subscription_events",
+            staged_view="staged_subscription_events",
+            build_table="subscription_daily_metrics",
+            final_view="subscription_daily_report",
+            raw_asset="raw.subscription_events_csv",
+            final_asset="mart.subscription_daily_report",
+            date_column="event_date",
+            raw_schema_columns=[
+                ("event_id", "string"),
+                ("account_id", "string"),
+                ("event_date", "date"),
+                ("plan_tier", "string"),
+                ("event_type", "string"),
+            ],
+            required_output_columns=[
+                "plan_tier",
+                "event_date",
+                "new_subscriptions",
+                "cancelled_subscriptions",
+                "net_subscriptions",
+            ],
+            build_metric_groups=[
+                ["event_type = 'started'", "event_type='started'"],
+                ["event_type = 'cancelled'", "event_type='cancelled'"],
+                ["net_subscriptions"],
+            ],
+            report_terms=["subscription_daily_report", "DuckDB", "plan_tier"],
+            correct_load_sql="""create or replace view staged_subscription_events as
+select
+  event_id,
+  account_id,
+  cast(event_date as date) as event_date,
+  plan_tier,
+  lower(event_type) as event_type
+from raw_subscription_events;
+""",
+            correct_build_sql="""create or replace table subscription_daily_metrics as
+select
+  plan_tier,
+  event_date,
+  sum(case when event_type = 'started' then 1 else 0 end) as new_subscriptions,
+  sum(case when event_type = 'cancelled' then 1 else 0 end) as cancelled_subscriptions,
+  sum(case when event_type = 'started' then 1 else 0 end) - sum(case when event_type = 'cancelled' then 1 else 0 end) as net_subscriptions
+from staged_subscription_events
+group by 1, 2;
+""",
+            correct_report_sql="""create or replace view subscription_daily_report as
+select
+  plan_tier,
+  event_date,
+  new_subscriptions,
+  cancelled_subscriptions,
+  net_subscriptions
+from subscription_daily_metrics;
+""",
+            expected_raw_preview=[
+                {"event_id": "E001", "plan_tier": "pro", "event_type": "started"},
+                {"event_id": "E002", "plan_tier": "basic", "event_type": "started"},
+            ],
+            expected_derived_preview=[
+                {"plan_tier": "basic", "event_date": "2026-04-01", "new_subscriptions": 1},
+            ],
+            expected_final_preview=[
+                {"plan_tier": "pro", "event_date": "2026-04-02", "net_subscriptions": 0},
+            ],
+        ),
+        simulation_scenario(
+            scenario_id="SIM-003",
+            developer_request=(
+                "Create a warehouse-level inventory movement report from this CSV. "
+                "Stage the file, load it into DuckDB, and publish a daily inventory view."
+            ),
+            workspace_summary=(
+                "Generate a pipeline that turns inventory movement events into a daily "
+                "warehouse inventory report with received, shipped, and net units."
+            ),
+            source_csv_path="data/inventory_movements.csv",
+            source_csv_content="""movement_id,warehouse_id,movement_date,sku,movement_type,units
+M001,W1,2026-04-01,SKU1,inbound,20
+M002,W1,2026-04-01,SKU2,outbound,5
+M003,W2,2026-04-01,SKU9,inbound,12
+M004,W1,2026-04-02,SKU1,outbound,4
+M005,W2,2026-04-02,SKU9,outbound,2
+M006,W2,2026-04-02,SKU8,inbound,8
+""",
+            raw_table="raw_inventory_movements",
+            staged_view="staged_inventory_movements",
+            build_table="inventory_daily_balance",
+            final_view="inventory_daily_report",
+            raw_asset="raw.inventory_movements_csv",
+            final_asset="mart.inventory_daily_report",
+            date_column="movement_date",
+            raw_schema_columns=[
+                ("movement_id", "string"),
+                ("warehouse_id", "string"),
+                ("movement_date", "date"),
+                ("sku", "string"),
+                ("movement_type", "string"),
+                ("units", "integer"),
+            ],
+            required_output_columns=[
+                "warehouse_id",
+                "movement_date",
+                "received_units",
+                "shipped_units",
+                "net_units",
+            ],
+            build_metric_groups=[
+                ["movement_type = 'inbound'", "movement_type='inbound'"],
+                ["movement_type = 'outbound'", "movement_type='outbound'"],
+                ["net_units"],
+            ],
+            report_terms=["inventory_daily_report", "DuckDB", "warehouse_id"],
+            correct_load_sql="""create or replace view staged_inventory_movements as
+select
+  movement_id,
+  warehouse_id,
+  cast(movement_date as date) as movement_date,
+  sku,
+  lower(movement_type) as movement_type,
+  units
+from raw_inventory_movements;
+""",
+            correct_build_sql="""create or replace table inventory_daily_balance as
+select
+  warehouse_id,
+  movement_date,
+  sum(case when movement_type = 'inbound' then units else 0 end) as received_units,
+  sum(case when movement_type = 'outbound' then units else 0 end) as shipped_units,
+  sum(case when movement_type = 'inbound' then units else 0 end) - sum(case when movement_type = 'outbound' then units else 0 end) as net_units
+from staged_inventory_movements
+group by 1, 2;
+""",
+            correct_report_sql="""create or replace view inventory_daily_report as
+select
+  warehouse_id,
+  movement_date,
+  received_units,
+  shipped_units,
+  net_units
+from inventory_daily_balance;
+""",
+            expected_raw_preview=[
+                {"movement_id": "M001", "warehouse_id": "W1", "movement_type": "inbound"},
+                {"movement_id": "M002", "warehouse_id": "W1", "movement_type": "outbound"},
+            ],
+            expected_derived_preview=[
+                {"warehouse_id": "W1", "movement_date": "2026-04-01", "received_units": 20},
+            ],
+            expected_final_preview=[
+                {"warehouse_id": "W2", "movement_date": "2026-04-02", "net_units": 6},
+            ],
+        ),
+        simulation_scenario(
+            scenario_id="SIM-004",
+            developer_request=(
+                "Repair the builder's broken customer-order pipeline so the staged CSV loads, "
+                "the summary table builds correctly, and the final report contract stays intact."
+            ),
+            workspace_summary=(
+                "Builder already generated a first pass of the customer report pipeline, but the "
+                "runtime fails. Read the existing draft files, diagnose the SQL bug, and repair the workflow."
+            ),
+            source_csv_path="data/sales_orders.csv",
+            source_csv_content="""order_id,customer_id,order_date,product_category,quantity,unit_price
+2001,C010,2026-04-05,books,1,18.00
+2002,C011,2026-04-05,gadgets,2,45.00
+2003,C010,2026-04-06,games,1,35.00
+2004,C012,2026-04-06,books,4,10.00
+""",
+            raw_table="raw_sales_orders",
+            staged_view="staged_sales_orders",
+            build_table="customer_summary",
+            final_view="customer_daily_report",
+            raw_asset="raw.sales_orders_csv",
+            final_asset="mart.customer_daily_report",
+            date_column="order_date",
+            raw_schema_columns=[
+                ("order_id", "string"),
+                ("customer_id", "string"),
+                ("order_date", "date"),
+                ("product_category", "string"),
+                ("quantity", "integer"),
+                ("unit_price", "float"),
+            ],
+            required_output_columns=[
+                "customer_id",
+                "order_date",
+                "order_count",
+                "gross_revenue_usd",
+            ],
+            build_metric_groups=[
+                ["quantity * unit_price", "unit_price * quantity"],
+                ["gross_revenue_usd"],
+            ],
+            report_terms=["customer_daily_report", "DuckDB", "warehouse"],
+            correct_load_sql="""create or replace view staged_sales_orders as
+select
+  order_id,
+  customer_id,
+  cast(order_date as date) as order_date,
+  quantity,
+  unit_price
+from raw_sales_orders;
+""",
+            correct_build_sql="""create or replace table customer_summary as
+select
+  customer_id,
+  order_date,
+  count(*) as order_count,
+  sum(quantity * unit_price) as gross_revenue_usd
+from staged_sales_orders
+group by 1, 2;
+""",
+            correct_report_sql="""create or replace view customer_daily_report as
+select
+  customer_id,
+  order_date,
+  order_count,
+  gross_revenue_usd
+from customer_summary;
+""",
+            starter_files={
+                "pipelines/report_job.yaml": """name: customer_daily_report_job
 storage_path: mock_s3/staged/sales_orders.csv
 raw_table: raw_sales_orders
 load_sql: sql/load_raw.sql
@@ -2430,141 +2931,375 @@ build_sql: sql/build_table.sql
 report_sql: sql/report_view.sql
 final_view: customer_daily_report
 """,
-                "schemas/raw_sales_orders.json": """{
-  "name": "raw_sales_orders",
-  "columns": [
-    {"name": "order_id", "type": "string"},
-    {"name": "customer_id", "type": "string"},
-    {"name": "order_date", "type": "date"},
-    {"name": "product_category", "type": "string"},
-    {"name": "quantity", "type": "integer"},
-    {"name": "unit_price", "type": "float"}
-  ]
-}
+                "sql/load_raw.sql": """create or replace view staged_sales_orders as
+select
+  order_id,
+  customer_id,
+  cast(order_date as date) as order_date,
+  quantity,
+  unit_price
+from raw_sales_orders;
+""",
+                "sql/build_table.sql": """create or replace table customer_summary as
+select
+  customer_id,
+  order_date,
+  count(*) as order_count,
+  sum(quantity * price) as gross_revenue_usd
+from staged_sales_orders
+group by 1, 2;
+""",
+                "sql/report_view.sql": """create or replace view customer_daily_report as
+select
+  customer_id,
+  order_date,
+  order_count,
+  gross_revenue_usd
+from customer_summary;
 """,
             },
-            schema_registry={
-                "raw.sales_orders_csv": """asset: raw.sales_orders_csv
-columns:
-  - order_id: string
-  - customer_id: string
-  - order_date: date
-  - product_category: string
-  - quantity: integer
-  - unit_price: float
+        ),
+        simulation_scenario(
+            scenario_id="SIM-005",
+            developer_request=(
+                "Fix this broken subscription reporting workflow. The builder used the right source CSV "
+                "but the final pipeline no longer matches the expected report view contract."
+            ),
+            workspace_summary=(
+                "A builder draft already exists for the subscription daily report. Repair the pipeline "
+                "and SQL so the runtime publishes the intended final view and output columns."
+            ),
+            source_csv_path="data/subscription_events.csv",
+            source_csv_content="""event_id,account_id,event_date,plan_tier,event_type
+S001,A200,2026-04-07,pro,started
+S002,A201,2026-04-07,basic,started
+S003,A200,2026-04-08,pro,cancelled
+S004,A202,2026-04-08,pro,started
 """,
-                "mart.customer_daily_report": """asset: mart.customer_daily_report
-required_columns:
-  - customer_id
-  - order_date
-  - order_count
-  - gross_revenue_usd
+            raw_table="raw_subscription_events",
+            staged_view="staged_subscription_events",
+            build_table="subscription_daily_metrics",
+            final_view="subscription_daily_report",
+            raw_asset="raw.subscription_events_csv",
+            final_asset="mart.subscription_daily_report",
+            date_column="event_date",
+            raw_schema_columns=[
+                ("event_id", "string"),
+                ("account_id", "string"),
+                ("event_date", "date"),
+                ("plan_tier", "string"),
+                ("event_type", "string"),
+            ],
+            required_output_columns=[
+                "plan_tier",
+                "event_date",
+                "new_subscriptions",
+                "cancelled_subscriptions",
+                "net_subscriptions",
+            ],
+            build_metric_groups=[
+                ["event_type = 'started'", "event_type='started'"],
+                ["event_type = 'cancelled'", "event_type='cancelled'"],
+                ["net_subscriptions"],
+            ],
+            report_terms=["subscription_daily_report", "DuckDB", "plan_tier"],
+            correct_load_sql="""create or replace view staged_subscription_events as
+select
+  event_id,
+  account_id,
+  cast(event_date as date) as event_date,
+  plan_tier,
+  lower(event_type) as event_type
+from raw_subscription_events;
+""",
+            correct_build_sql="""create or replace table subscription_daily_metrics as
+select
+  plan_tier,
+  event_date,
+  sum(case when event_type = 'started' then 1 else 0 end) as new_subscriptions,
+  sum(case when event_type = 'cancelled' then 1 else 0 end) as cancelled_subscriptions,
+  sum(case when event_type = 'started' then 1 else 0 end) - sum(case when event_type = 'cancelled' then 1 else 0 end) as net_subscriptions
+from staged_subscription_events
+group by 1, 2;
+""",
+            correct_report_sql="""create or replace view subscription_daily_report as
+select
+  plan_tier,
+  event_date,
+  new_subscriptions,
+  cancelled_subscriptions,
+  net_subscriptions
+from subscription_daily_metrics;
+""",
+            starter_files={
+                "pipelines/report_job.yaml": """name: subscription_daily_report_job
+storage_path: mock_s3/staged/subscription_events.csv
+raw_table: raw_subscription_events
+load_sql: sql/load_raw.sql
+build_sql: sql/build_table.sql
+report_sql: sql/report_view.sql
+final_view: customer_daily_report
+""",
+                "sql/load_raw.sql": """create or replace view staged_subscription_events as
+select
+  event_id,
+  account_id,
+  cast(event_date as date) as event_date,
+  plan_tier,
+  lower(event_type) as event_type
+from raw_subscription_events;
+""",
+                "sql/build_table.sql": """create or replace table subscription_daily_metrics as
+select
+  plan_tier,
+  event_date,
+  sum(case when event_type = 'started' then 1 else 0 end) as new_subscriptions,
+  sum(case when event_type = 'cancelled' then 1 else 0 end) as cancelled_subscriptions,
+  sum(case when event_type = 'started' then 1 else 0 end) - sum(case when event_type = 'cancelled' then 1 else 0 end) as net_subscriptions
+from staged_subscription_events
+group by 1, 2;
+""",
+                "sql/report_view.sql": """create or replace view customer_daily_report as
+select
+  plan_tier,
+  event_date,
+  new_subscriptions as started_subscriptions,
+  cancelled_subscriptions,
+  net_subscriptions
+from subscription_daily_metrics;
 """,
             },
-            workflow_target={
-                "required_artifacts": ["pipeline_yaml", "load_sql", "build_sql", "report_sql"],
-                "artifacts": {
-                    "pipeline_yaml": workflow_artifact(
-                        "pipelines/report_job.yaml",
-                        required_groups=[
-                            ["storage_path: mock_s3/staged/sales_orders.csv"],
-                            ["raw_table: raw_sales_orders"],
-                            ["load_sql: sql/load_raw.sql"],
-                            ["build_sql: sql/build_table.sql"],
-                            ["report_sql: sql/report_view.sql"],
-                            ["final_view: customer_daily_report"],
-                        ],
-                        weight=1.0,
-                    ),
-                    "load_sql": workflow_artifact(
-                        "sql/load_raw.sql",
-                        required_groups=[
-                            ["create", "staged_sales_orders"],
-                            ["raw_sales_orders"],
-                            ["cast(order_date as date)", "try_cast(order_date as date)"],
-                        ],
-                        weight=1.0,
-                    ),
-                    "build_sql": workflow_artifact(
-                        "sql/build_table.sql",
-                        required_groups=[
-                            ["create", "customer_summary"],
-                            ["staged_sales_orders"],
-                            ["quantity * unit_price", "unit_price * quantity"],
-                        ],
-                        weight=1.2,
-                    ),
-                    "report_sql": workflow_artifact(
-                        "sql/report_view.sql",
-                        required_groups=[
-                            ["create", "customer_daily_report"],
-                            ["customer_summary"],
-                            ["order_count"],
-                            ["gross_revenue_usd"],
-                        ],
-                        weight=1.2,
-                    ),
-                },
-                "validator_targets": [
-                    "storage_stage_check",
-                    "duckdb_load_check",
-                    "report_view_check",
-                    "output_schema_check",
-                ],
-                "solve_validator_targets": [
-                    "storage_stage_check",
-                    "duckdb_load_check",
-                    "report_view_check",
-                    "output_schema_check",
-                ],
-                "summary_groups": [
-                    ["sales_orders.csv"],
-                    ["customer_daily_report"],
-                    ["DuckDB", "warehouse"],
-                ],
-                "investigation_targets": [
-                    ("read_file", "docs/runtime_contract.md"),
-                    ("read_file", "data/sales_orders.csv"),
-                    ("inspect_schema", "raw.sales_orders_csv"),
-                ],
+        ),
+        simulation_scenario(
+            scenario_id="SIM-006",
+            developer_request=(
+                "Repair the inventory movement report. The current draft runs partway through, "
+                "but the final report schema no longer matches the contract expected by downstream users."
+            ),
+            workspace_summary=(
+                "You are in Fixer mode on an inventory reporting workflow. Read the broken draft "
+                "and repair the output schema without changing the warehouse-level business meaning."
+            ),
+            source_csv_path="data/inventory_movements.csv",
+            source_csv_content="""movement_id,warehouse_id,movement_date,sku,movement_type,units
+I001,W5,2026-04-09,SKU1,inbound,15
+I002,W5,2026-04-09,SKU2,outbound,3
+I003,W6,2026-04-10,SKU8,inbound,10
+I004,W6,2026-04-10,SKU8,outbound,4
+""",
+            raw_table="raw_inventory_movements",
+            staged_view="staged_inventory_movements",
+            build_table="inventory_daily_balance",
+            final_view="inventory_daily_report",
+            raw_asset="raw.inventory_movements_csv",
+            final_asset="mart.inventory_daily_report",
+            date_column="movement_date",
+            raw_schema_columns=[
+                ("movement_id", "string"),
+                ("warehouse_id", "string"),
+                ("movement_date", "date"),
+                ("sku", "string"),
+                ("movement_type", "string"),
+                ("units", "integer"),
+            ],
+            required_output_columns=[
+                "warehouse_id",
+                "movement_date",
+                "received_units",
+                "shipped_units",
+                "net_units",
+            ],
+            build_metric_groups=[
+                ["movement_type = 'inbound'", "movement_type='inbound'"],
+                ["movement_type = 'outbound'", "movement_type='outbound'"],
+                ["net_units"],
+            ],
+            report_terms=["inventory_daily_report", "DuckDB", "warehouse_id"],
+            correct_load_sql="""create or replace view staged_inventory_movements as
+select
+  movement_id,
+  warehouse_id,
+  cast(movement_date as date) as movement_date,
+  sku,
+  lower(movement_type) as movement_type,
+  units
+from raw_inventory_movements;
+""",
+            correct_build_sql="""create or replace table inventory_daily_balance as
+select
+  warehouse_id,
+  movement_date,
+  sum(case when movement_type = 'inbound' then units else 0 end) as received_units,
+  sum(case when movement_type = 'outbound' then units else 0 end) as shipped_units,
+  sum(case when movement_type = 'inbound' then units else 0 end) - sum(case when movement_type = 'outbound' then units else 0 end) as net_units
+from staged_inventory_movements
+group by 1, 2;
+""",
+            correct_report_sql="""create or replace view inventory_daily_report as
+select
+  warehouse_id,
+  movement_date,
+  received_units,
+  shipped_units,
+  net_units
+from inventory_daily_balance;
+""",
+            starter_files={
+                "pipelines/report_job.yaml": """name: inventory_daily_report_job
+storage_path: mock_s3/staged/inventory_movements.csv
+raw_table: raw_inventory_movements
+load_sql: sql/load_raw.sql
+build_sql: sql/build_table.sql
+report_sql: sql/report_view.sql
+final_view: inventory_daily_report
+""",
+                "sql/load_raw.sql": """create or replace view staged_inventory_movements as
+select
+  movement_id,
+  warehouse_id,
+  cast(movement_date as date) as movement_date,
+  sku,
+  lower(movement_type) as movement_type,
+  units
+from raw_inventory_movements;
+""",
+                "sql/build_table.sql": """create or replace table inventory_daily_balance as
+select
+  warehouse_id,
+  movement_date,
+  sum(case when movement_type = 'inbound' then units else 0 end) as received_units,
+  sum(case when movement_type = 'outbound' then units else 0 end) as shipped_units,
+  sum(case when movement_type = 'inbound' then units else 0 end) - sum(case when movement_type = 'outbound' then units else 0 end) as net_units
+from staged_inventory_movements
+group by 1, 2;
+""",
+                "sql/report_view.sql": """create or replace view inventory_daily_report as
+select
+  warehouse_id,
+  movement_date,
+  received_units as inbound_units,
+  shipped_units as outbound_units,
+  net_units
+from inventory_daily_balance;
+""",
             },
-            validators={
-                "storage_stage_check": {
-                    "description": "Checks that the CSV could be staged into mock storage.",
-                    "kind": "runtime_check",
-                    "check_key": "storage_stage_check",
-                },
-                "duckdb_load_check": {
-                    "description": "Checks that the staged CSV loads into DuckDB.",
-                    "kind": "runtime_check",
-                    "check_key": "duckdb_load_check",
-                },
-                "report_view_check": {
-                    "description": "Checks that the final report view compiles.",
-                    "kind": "runtime_check",
-                    "check_key": "report_view_check",
-                },
-                "output_schema_check": {
-                    "description": "Checks that the final report view exposes the expected schema.",
-                    "kind": "runtime_check",
-                    "check_key": "output_schema_check",
-                },
+        ),
+        simulation_scenario(
+            scenario_id="SIM-007",
+            developer_request=(
+                "Builder already created an initial returns-report pipeline, but the runtime fails. "
+                "Use the shared workspace to diagnose the failure and repair the pipeline so the final report view is queryable."
+            ),
+            workspace_summary=(
+                "This shared Builder + Fixer workspace already contains a first-pass pipeline for a returns report. "
+                "The builder draft stages the CSV and points the runtime at the right files, but one SQL artifact is broken. "
+                "Fixer should use runtime feedback to repair the workflow and publish the expected report view."
+            ),
+            source_csv_path="data/returns_events.csv",
+            source_csv_content="""return_id,customer_id,return_date,return_reason,refund_amount
+R001,C300,2026-04-11,damaged,45.00
+R002,C301,2026-04-11,wrong_item,30.00
+R003,C300,2026-04-12,damaged,15.00
+R004,C302,2026-04-12,late_delivery,22.50
+R005,C301,2026-04-13,wrong_item,18.00
+""",
+            raw_table="raw_returns_events",
+            staged_view="staged_returns_events",
+            build_table="returns_daily_summary",
+            final_view="returns_daily_report",
+            raw_asset="raw.returns_events_csv",
+            final_asset="mart.returns_daily_report",
+            date_column="return_date",
+            raw_schema_columns=[
+                ("return_id", "string"),
+                ("customer_id", "string"),
+                ("return_date", "date"),
+                ("return_reason", "string"),
+                ("refund_amount", "float"),
+            ],
+            required_output_columns=[
+                "return_reason",
+                "return_date",
+                "return_count",
+                "refund_total_usd",
+            ],
+            build_metric_groups=[
+                ["count(*) as return_count", "count(*) return_count"],
+                ["sum(refund_amount) as refund_total_usd", "sum(refund_amount) refund_total_usd"],
+            ],
+            report_terms=["returns_daily_report", "DuckDB", "return_reason"],
+            correct_load_sql="""create or replace view staged_returns_events as
+select
+  return_id,
+  customer_id,
+  cast(return_date as date) as return_date,
+  return_reason,
+  refund_amount
+from raw_returns_events;
+""",
+            correct_build_sql="""create or replace table returns_daily_summary as
+select
+  return_reason,
+  return_date,
+  count(*) as return_count,
+  sum(refund_amount) as refund_total_usd
+from staged_returns_events
+group by 1, 2;
+""",
+            correct_report_sql="""create or replace view returns_daily_report as
+select
+  return_reason,
+  return_date,
+  return_count,
+  refund_total_usd
+from returns_daily_summary;
+""",
+            starter_files={
+                "pipelines/report_job.yaml": """name: returns_daily_report_job
+storage_path: mock_s3/staged/returns_events.csv
+raw_table: raw_returns_events
+load_sql: sql/load_raw.sql
+build_sql: sql/build_table.sql
+report_sql: sql/report_view.sql
+final_view: returns_daily_report
+""",
+                "sql/load_raw.sql": """create or replace view staged_returns_events as
+select
+  return_id,
+  customer_id,
+  cast(return_date as date) as return_date,
+  return_reason,
+  refund_amount
+from raw_returns_events;
+""",
+                "sql/build_table.sql": """create or replace table returns_daily_summary as
+select
+  return_reason,
+  returned_at,
+  count(*) as return_count,
+  sum(refund_amount) as refund_total_usd
+from staged_returns_events
+group by 1, 2;
+""",
+                "sql/report_view.sql": """create or replace view returns_daily_report as
+select
+  return_reason,
+  return_date,
+  return_count,
+  refund_total_usd
+from returns_daily_summary;
+""",
             },
-            llm_draft={
-                "simulation_target": {
-                    "source_csv": "data/sales_orders.csv",
-                    "pipeline_path": "pipelines/report_job.yaml",
-                    "load_sql_path": "sql/load_raw.sql",
-                    "build_sql_path": "sql/build_table.sql",
-                    "report_sql_path": "sql/report_view.sql",
-                    "required_output_columns": [
-                        "customer_id",
-                        "order_date",
-                        "order_count",
-                        "gross_revenue_usd",
-                    ],
-                }
-            },
+            expected_raw_preview=[
+                {"return_id": "R001", "customer_id": "C300", "return_reason": "damaged"},
+                {"return_id": "R002", "customer_id": "C301", "return_reason": "wrong_item"},
+            ],
+            expected_derived_preview=[
+                {"return_reason": "damaged", "return_date": "2026-04-11", "return_count": 1},
+            ],
+            expected_final_preview=[
+                {"return_reason": "wrong_item", "return_date": "2026-04-11", "refund_total_usd": 30.0},
+            ],
         ),
     ],
 }

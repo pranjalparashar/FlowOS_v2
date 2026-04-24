@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import logging
 import re
 import statistics
+from pathlib import Path
 from typing import Any
 
 try:
@@ -55,6 +58,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--load-in-4bit", action="store_true", help="Use 4-bit quantized loading when supported")
     parser.add_argument("--max-seq-length", type=int, default=4096, help="Max sequence length for model loading")
     parser.add_argument("--debug-actions", action="store_true", help="Log raw completions and fallback actions")
+    parser.add_argument("--disable-fallback", action="store_true", help="Evaluate the raw policy without fallback rescue")
+    parser.add_argument("--results-dir", default=None, help="Optional directory to write eval metrics and summaries")
     return parser.parse_args()
 
 
@@ -203,8 +208,11 @@ def run_policy(
                     _clean_preview(raw_text),
                     action,
                 )
-            if not action_is_valid(action, observation):
+            model_action_valid = action_is_valid(action, observation)
+            used_fallback = False
+            if not model_action_valid and not args.disable_fallback:
                 fallback = fallback_action(sample.task_id, observation)
+                used_fallback = True
                 if args.debug_actions:
                     logger.info(
                         "Eval fallback task=%s step=%s fallback=%s",
@@ -213,7 +221,14 @@ def run_policy(
                         fallback,
                     )
                 action = fallback
-            return {"action": action, "metadata": {"text": raw_text}}
+            return {
+                "action": action,
+                "metadata": {
+                    "text": raw_text,
+                    "used_fallback": used_fallback,
+                    "model_action_valid": model_action_valid,
+                },
+            }
 
         metrics = run_episode(
             base_url=args.env_url,
@@ -230,9 +245,44 @@ def run_policy(
                 "score": metrics.score,
                 "solved": metrics.solved,
                 "steps": metrics.steps,
+                "fallback_steps": metrics.fallback_steps,
+                "valid_model_steps": metrics.valid_model_steps,
             }
         )
     return results
+
+
+def write_results(results_dir: str | None, rows: list[dict[str, Any]]) -> None:
+    if not results_dir:
+        return
+    output_dir = Path(results_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    per_episode_path = output_dir / "eval_episode_metrics.csv"
+    summary_path = output_dir / "eval_summary.json"
+
+    if rows:
+        fieldnames = list(rows[0].keys())
+        with per_episode_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    summary_rows: list[dict[str, Any]] = []
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row["label"]), []).append(row)
+    for label, group in grouped.items():
+        aggregate = summarize(group)
+        aggregate["policy"] = label
+        aggregate["episodes"] = len(group)
+        aggregate["avg_fallback_steps"] = statistics.fmean(item["fallback_steps"] for item in group)
+        aggregate["avg_valid_model_steps"] = statistics.fmean(item["valid_model_steps"] for item in group)
+        summary_rows.append(aggregate)
+
+    summary_path.write_text(json.dumps(summary_rows, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.info("Wrote eval metrics to %s", per_episode_path)
+    logger.info("Wrote eval summary to %s", summary_path)
 
 
 def print_table(rows: list[dict[str, Any]]) -> None:
@@ -277,6 +327,8 @@ def main() -> None:
         )
         tuned_results = run_policy(tuned_label, tuned_model, tuned_tokenizer, args)
         rows.append({"policy": tuned_label, **summarize(tuned_results)})
+        base_results.extend(tuned_results)
+    write_results(args.results_dir, base_results)
 
     print_table(rows)
 

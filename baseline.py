@@ -1109,20 +1109,38 @@ def fallback_action(task_name: str, observation: Any) -> dict[str, Any]:
         return {"action_type": "submit_workspace", "parameters": {"summary": spec["summary"]}}
 
     if grader_family == "simulation":
+        scenario = SCENARIO_REGISTRY.get(observation.scenario_id, {})
+        simulation_target = scenario.get("simulation_target", {})
+        reference_solution = scenario.get("llm_draft", {}).get("reference_solution", {})
+        source_csv = simulation_target.get("source_csv", "data/sales_orders.csv")
+        final_view_name = (
+            simulation_target.get("expected_final_view", {}).get("name")
+            or os.path.splitext(os.path.basename(source_csv))[0]
+        )
+        raw_asset = next(
+            (
+                asset
+                for asset in observation.known_assets
+                if asset.startswith("raw.")
+            ),
+            "raw.sales_orders_csv",
+        )
         read_order = [
             "docs/runtime_contract.md",
-            "data/sales_orders.csv",
+            source_csv,
         ]
         for path in read_order:
             if path in observation.known_files and path not in queried.get("read_file", {}):
                 return {"action_type": "read_file", "parameters": {"path": path}}
-        if "raw.sales_orders_csv" in observation.known_assets and "raw.sales_orders_csv" not in queried.get("inspect_schema", {}):
-            return {"action_type": "inspect_schema", "parameters": {"asset": "raw.sales_orders_csv"}}
+        if raw_asset in observation.known_assets and raw_asset not in queried.get("inspect_schema", {}):
+            return {"action_type": "inspect_schema", "parameters": {"asset": raw_asset}}
 
         simulation_edits = [
             (
                 "pipelines/report_job.yaml",
-                """name: customer_daily_report_job
+                reference_solution.get(
+                    "pipeline_yaml",
+                    """name: customer_daily_report_job
 storage_path: mock_s3/staged/sales_orders.csv
 raw_table: raw_sales_orders
 load_sql: sql/load_raw.sql
@@ -1130,10 +1148,13 @@ build_sql: sql/build_table.sql
 report_sql: sql/report_view.sql
 final_view: customer_daily_report
 """,
+                ),
             ),
             (
                 "sql/load_raw.sql",
-                """create or replace view staged_sales_orders as
+                reference_solution.get(
+                    "load_sql",
+                    """create or replace view staged_sales_orders as
 select
   order_id,
   customer_id,
@@ -1142,10 +1163,13 @@ select
   unit_price
 from raw_sales_orders;
 """,
+                ),
             ),
             (
                 "sql/build_table.sql",
-                """create or replace table customer_summary as
+                reference_solution.get(
+                    "build_sql",
+                    """create or replace table customer_summary as
 select
   customer_id,
   order_date,
@@ -1154,10 +1178,13 @@ select
 from staged_sales_orders
 group by 1, 2;
 """,
+                ),
             ),
             (
                 "sql/report_view.sql",
-                """create or replace view customer_daily_report as
+                reference_solution.get(
+                    "report_sql",
+                    """create or replace view customer_daily_report as
 select
   customer_id,
   order_date,
@@ -1165,6 +1192,7 @@ select
   gross_revenue_usd
 from customer_summary;
 """,
+                ),
             ),
         ]
 
@@ -1179,7 +1207,9 @@ from customer_summary;
         return {
             "action_type": "submit_workspace",
             "parameters": {
-                "summary": "Built a DuckDB pipeline from sales_orders.csv and published customer_daily_report."
+                "summary": (
+                    f"Built a DuckDB pipeline from {os.path.basename(source_csv)} and published {final_view_name}."
+                )
             },
         }
 

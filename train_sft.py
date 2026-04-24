@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 from dataclasses import dataclass
@@ -38,6 +39,7 @@ def parse_args() -> argparse.Namespace:
         default="paged_adamw_8bit",
         help="Transformers Trainer optimizer name",
     )
+    parser.add_argument("--metrics-file", default="training_metrics.csv", help="CSV file for trainer log history")
     parser.add_argument("--report-to", default="none", choices=("none", "tensorboard", "wandb"), help="Logging backend")
     return parser.parse_args()
 
@@ -221,6 +223,16 @@ def main() -> None:
     trainer.train()
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
+    metrics_path = Path(args.output_dir) / args.metrics_file
+    history_rows = [row for row in trainer.state.log_history if any(key in row for key in ("loss", "train_loss", "epoch"))]
+    if history_rows:
+        fieldnames = sorted({key for row in history_rows for key in row.keys()})
+        with metrics_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in history_rows:
+                writer.writerow(row)
+        print(f"Saved training metrics to {metrics_path}")
     print(f"Saved SFT model to {args.output_dir}")
 
 

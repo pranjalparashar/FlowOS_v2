@@ -71,6 +71,8 @@ class EpisodeMetrics:
     runtime_status: dict[str, Any]
     output_schema: list[str]
     report_preview: list[dict[str, Any]]
+    fallback_steps: int = 0
+    valid_model_steps: int = 0
     prompt_ids: list[int] | None = None
     completion_ids: list[int] | None = None
     logprobs: list[float] | None = None
@@ -269,6 +271,8 @@ async def run_episode_async(
     await env.connect()
     transcript: list[dict[str, Any]] = []
     rewards: list[float] = []
+    fallback_steps = 0
+    valid_model_steps = 0
     prompt_ids: list[int] = []
     completion_ids: list[int] = []
     logprobs: list[float] = []
@@ -285,6 +289,10 @@ async def run_episode_async(
             action_payload = policy(observation, transcript)
             action = coerce_action(action_payload.get("action"))
             metadata = action_payload.get("metadata", {})
+            if metadata.get("used_fallback", False):
+                fallback_steps += 1
+            if metadata.get("model_action_valid", False):
+                valid_model_steps += 1
             prompt_ids.extend(metadata.get("prompt_ids", []))
             completion_ids.extend(metadata.get("completion_ids", []))
             logprobs.extend(metadata.get("logprobs", []))
@@ -319,6 +327,8 @@ async def run_episode_async(
             runtime_status=dict(getattr(observation, "runtime_status", {})),
             output_schema=list(getattr(observation, "output_schema", [])),
             report_preview=list(getattr(observation, "report_preview", [])),
+            fallback_steps=fallback_steps,
+            valid_model_steps=valid_model_steps,
             prompt_ids=prompt_ids,
             completion_ids=completion_ids,
             logprobs=logprobs,
