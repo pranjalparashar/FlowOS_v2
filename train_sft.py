@@ -41,6 +41,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--metrics-file", default="training_metrics.csv", help="CSV file for trainer log history")
     parser.add_argument("--report-to", default="none", choices=("none", "tensorboard", "wandb"), help="Logging backend")
+    parser.add_argument(
+        "--min-trace-rank",
+        type=float,
+        default=0.0,
+        help="Minimum episode-level trace_rank_score required to keep a trace",
+    )
+    parser.add_argument(
+        "--top-trace-fraction",
+        type=float,
+        default=1.0,
+        help="Keep only the top fraction of episodes ranked by trace_rank_score",
+    )
+    parser.add_argument(
+        "--max-episodes",
+        type=int,
+        default=0,
+        help="Optional cap on the number of highest-ranked episodes to keep after filtering",
+    )
     return parser.parse_args()
 
 
@@ -69,6 +87,52 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
                 continue
             rows.append(json.loads(line))
     return rows
+
+
+def filter_ranked_rows(
+    rows: list[dict[str, Any]],
+    min_trace_rank: float,
+    top_trace_fraction: float,
+    max_episodes: int,
+) -> list[dict[str, Any]]:
+    if not rows:
+        return rows
+
+    grouped: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    episode_scores: dict[tuple[str, str, int], float] = {}
+    for row in rows:
+        episode_key = (
+            str(row.get("episode_id", "")),
+            str(row.get("scenario_id", "")),
+            int(row.get("episode_steps", row.get("step", 0))),
+        )
+        grouped.setdefault(episode_key, []).append(row)
+        episode_scores[episode_key] = max(
+            episode_scores.get(episode_key, 0.0),
+            float(row.get("trace_rank_score", 0.0)),
+        )
+
+    selected = [
+        episode_key
+        for episode_key, score in sorted(
+            episode_scores.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        if score >= min_trace_rank
+    ]
+    if top_trace_fraction < 1.0:
+        keep_count = max(1, int(len(selected) * top_trace_fraction))
+        selected = selected[:keep_count]
+    if max_episodes > 0:
+        selected = selected[:max_episodes]
+
+    selected_keys = set(selected)
+    filtered: list[dict[str, Any]] = []
+    for episode_key, episode_rows in grouped.items():
+        if episode_key in selected_keys:
+            filtered.extend(episode_rows)
+    return filtered
 
 
 @dataclass
@@ -148,6 +212,19 @@ def main() -> None:
     rows = load_jsonl(dataset_path)
     if not rows:
         raise SystemExit(f"No traces found at {dataset_path}")
+    original_row_count = len(rows)
+    rows = filter_ranked_rows(
+        rows,
+        min_trace_rank=args.min_trace_rank,
+        top_trace_fraction=args.top_trace_fraction,
+        max_episodes=args.max_episodes,
+    )
+    if not rows:
+        raise SystemExit("All traces were filtered out. Lower --min-trace-rank or increase --top-trace-fraction.")
+    if len(rows) != original_row_count:
+        print(
+            f"Filtered traces from {original_row_count} step examples down to {len(rows)} using ranked-episode selection."
+        )
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_id)
     if tokenizer.pad_token is None:
