@@ -25,11 +25,21 @@ DEFAULT_TRAIN_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 DEFAULT_MAX_TURNS = 12
 DEFAULT_MAX_NEW_TOKENS = 200
 
-TRAIN_SYSTEM_PROMPT = """You are operating the FlowOS benchmark as a production engineering agent.
-Reply with exactly one JSON object with keys "action_type" and "parameters".
-Do not include markdown, explanations, or code fences.
+TRAIN_SYSTEM_PROMPT = """Return exactly one JSON object:
+{"action_type":"...","parameters":{...}}
 
-Allowed action shapes:
+Rules:
+- Output JSON only.
+- No prose.
+- No markdown.
+- No code fences.
+- No explanation.
+- No extra keys.
+- Use exact action names, file paths, asset names, and validator names from the observation.
+- If unsure, return one best-effort JSON action anyway.
+- Any non-JSON output is invalid and will be penalized.
+
+Allowed actions:
 {"action_type":"search_workspace","parameters":{"query":"..."}}
 {"action_type":"read_file","parameters":{"path":"..."}}
 {"action_type":"inspect_schema","parameters":{"asset":"..."}}
@@ -41,13 +51,9 @@ Allowed action shapes:
 {"action_type":"submit_review","parameters":{"verdict":"approve|reject","issue_type":"...","summary":"..."}}
 {"action_type":"submit_workspace","parameters":{"summary":"..."}}
 
-Use exact file paths, asset names, and validator names from the observation.
-Good examples:
+Examples:
 {"action_type":"read_file","parameters":{"path":"docs/runtime_contract.md"}}
-{"action_type":"inspect_schema","parameters":{"asset":"raw.sales_orders_csv"}}
-{"action_type":"edit_file","parameters":{"path":"pipelines/report_job.yaml","content":"name: customer_daily_report_job\\nstorage_path: mock_s3/staged/sales_orders.csv\\nraw_table: raw_sales_orders\\nload_sql: sql/load_raw.sql\\nbuild_sql: sql/build_table.sql\\nreport_sql: sql/report_view.sql\\nfinal_view: customer_daily_report\\n"}}
-For simulate_csv_report_workflow, prefer starting with read_file on docs/runtime_contract.md or templates/report_pipeline_template.yaml.
-Return only one action per turn."""
+{"action_type":"inspect_schema","parameters":{"asset":"raw.sales_orders_csv"}}"""
 
 
 @dataclass
@@ -73,6 +79,7 @@ class EpisodeMetrics:
     report_preview: list[dict[str, Any]]
     fallback_steps: int = 0
     valid_model_steps: int = 0
+    json_format_steps: int = 0
     prompt_ids: list[int] | None = None
     completion_ids: list[int] | None = None
     logprobs: list[float] | None = None
@@ -132,21 +139,20 @@ def parse_action_json(response_text: str) -> dict[str, Any] | None:
         text = "\n".join(
             line for line in text.splitlines() if not line.strip().startswith("```")
         ).strip()
+    if not text.startswith("{"):
+        return None
     try:
         parsed = json.loads(text)
         return parsed if isinstance(parsed, dict) else None
     except json.JSONDecodeError:
         decoder = json.JSONDecoder()
-        for idx, char in enumerate(text):
-            if char != "{":
-                continue
-            try:
-                parsed, _ = decoder.raw_decode(text[idx:])
-            except json.JSONDecodeError:
-                continue
-            if isinstance(parsed, dict):
-                return parsed
-    return None
+        try:
+            parsed, end = decoder.raw_decode(text)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(parsed, dict) and text[end:].strip() == "":
+            return parsed
+        return None
 
 
 def coerce_action(action_dict: dict[str, Any] | None) -> DeveloperControlRoomAction:
@@ -273,6 +279,7 @@ async def run_episode_async(
     rewards: list[float] = []
     fallback_steps = 0
     valid_model_steps = 0
+    json_format_steps = 0
     prompt_ids: list[int] = []
     completion_ids: list[int] = []
     logprobs: list[float] = []
@@ -293,6 +300,8 @@ async def run_episode_async(
                 fallback_steps += 1
             if metadata.get("model_action_valid", False):
                 valid_model_steps += 1
+            if metadata.get("json_format_valid", False):
+                json_format_steps += 1
             prompt_ids.extend(metadata.get("prompt_ids", []))
             completion_ids.extend(metadata.get("completion_ids", []))
             logprobs.extend(metadata.get("logprobs", []))
@@ -329,6 +338,7 @@ async def run_episode_async(
             report_preview=list(getattr(observation, "report_preview", [])),
             fallback_steps=fallback_steps,
             valid_model_steps=valid_model_steps,
+            json_format_steps=json_format_steps,
             prompt_ids=prompt_ids,
             completion_ids=completion_ids,
             logprobs=logprobs,

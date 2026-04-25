@@ -46,7 +46,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-turns", type=int, default=12, help="Max environment turns per episode")
     parser.add_argument("--output-dir", default="outputs/sft_traces", help="Directory for JSONL traces")
     parser.add_argument("--policy", default="fallback", choices=("fallback",), help="Teacher policy to use")
+    parser.add_argument(
+        "--exclude-curriculum",
+        action="store_true",
+        help="Do not mix in the easy curriculum tasks when collecting traces for the main simulation workflow",
+    )
     return parser.parse_args()
+
+
+def _expanded_task_scope(task_scope: str, include_curriculum: bool) -> str:
+    if not include_curriculum:
+        return task_scope
+    requested = [task.strip() for task in task_scope.split(",") if task.strip()] if task_scope != "all" else ["all"]
+    if "all" in requested:
+        return task_scope
+    if "simulate_csv_report_workflow" not in requested:
+        return task_scope
+    expanded = list(requested)
+    for extra_task in (
+        "simulate_csv_report_curriculum_generate",
+        "simulate_csv_report_curriculum_repair",
+    ):
+        if extra_task not in expanded:
+            expanded.append(extra_task)
+    return ",".join(expanded)
 
 
 def _quality_label(score: float) -> str:
@@ -244,7 +267,9 @@ def main() -> None:
     episodes_path = output_dir / "episodes.jsonl"
     artifact_root = output_dir / "artifacts"
 
-    prompts = samples_to_dataset_prompts(build_episode_samples(args.task_scope, args.dataset_size))
+    prompts = samples_to_dataset_prompts(
+        build_episode_samples(_expanded_task_scope(args.task_scope, not args.exclude_curriculum), args.dataset_size)
+    )
 
     all_examples: list[dict[str, Any]] = []
     all_episodes: list[dict[str, Any]] = []

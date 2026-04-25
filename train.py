@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-generations", type=int, default=4, help="GRPO generations per prompt")
     parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS, help="Max environment turns per episode")
     parser.add_argument("--max-new-tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS, help="Max tokens per action generation")
-    parser.add_argument("--learning-rate", type=float, default=2e-6, help="Trainer learning rate")
+    parser.add_argument("--learning-rate", type=float, default=5e-7, help="Trainer learning rate")
     parser.add_argument("--output-dir", default=None, help="Checkpoint output directory")
     parser.add_argument("--task-scope", default="all", help="Task scope: all or comma-separated task ids")
     parser.add_argument("--report-to", default="none", choices=("none", "tensorboard", "wandb"), help="Logging backend")
@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--per-device-train-batch-size", type=int, default=1, help="Per-device batch size")
     parser.add_argument("--save-steps", type=int, default=10, help="Checkpoint save interval")
     parser.add_argument("--logging-steps", type=int, default=1, help="Logging interval")
-    parser.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature")
+    parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature")
     parser.add_argument(
         "--log-step-rewards",
         action="store_true",
@@ -203,6 +203,16 @@ def reward_total(completions: list[str], **kwargs: Any) -> list[float]:
     return [float(value) for value in rewards] if rewards else [0.0] * len(completions)
 
 
+def reward_format(completions: list[str], **kwargs: Any) -> list[float]:
+    rewards = kwargs.get("format_reward", [])
+    return [float(value) for value in rewards] if rewards else [0.0] * len(completions)
+
+
+def reward_valid_action(completions: list[str], **kwargs: Any) -> list[float]:
+    rewards = kwargs.get("valid_action_reward", [])
+    return [float(value) for value in rewards] if rewards else [0.0] * len(completions)
+
+
 def reward_score(completions: list[str], **kwargs: Any) -> list[float]:
     rewards = kwargs.get("score_reward", [])
     return [float(value) for value in rewards] if rewards else [0.0] * len(completions)
@@ -313,6 +323,8 @@ def main() -> None:
         total_rewards: list[float] = []
         score_rewards: list[float] = []
         solved_rewards: list[float] = []
+        format_rewards: list[float] = []
+        valid_action_rewards: list[float] = []
 
         for prompt in prompts:
             sample = parse_sample_prompt(prompt)
@@ -336,6 +348,7 @@ def main() -> None:
                     rollout_backend=args.rollout_backend,
                 )
                 parsed_action = parse_action_json(generation["text"])
+                json_format_valid = parsed_action is not None
                 valid_action = action_is_valid(parsed_action, observation)
                 if generation_debug_counter[0] < DEBUG_GENERATION_LOG_LIMIT:
                     logger.info(
@@ -359,6 +372,7 @@ def main() -> None:
                         fallback,
                     )
                     parsed_action = fallback
+                    used_fallback = True
                 elif not valid_action:
                     logger.info(
                         "Invalid action penalized task=%s step=%s fallback_mode=%s",
@@ -366,9 +380,17 @@ def main() -> None:
                         observation.step_count + 1,
                         args.fallback_mode,
                     )
+                    used_fallback = False
+                else:
+                    used_fallback = False
                 return {
                     "action": parsed_action,
-                    "metadata": generation,
+                    "metadata": {
+                        **generation,
+                        "used_fallback": used_fallback,
+                        "model_action_valid": valid_action,
+                        "json_format_valid": json_format_valid,
+                    },
                 }
 
             metrics = run_episode(
@@ -382,6 +404,14 @@ def main() -> None:
             completion_batches.append(metrics.completion_ids or [])
             logprob_batches.append(metrics.logprobs or [])
             total_rewards.append(metrics.total_reward)
+            if metrics.steps > 0:
+                json_fraction = metrics.json_format_steps / metrics.steps
+                valid_fraction = metrics.valid_model_steps / metrics.steps
+            else:
+                json_fraction = 0.0
+                valid_fraction = 0.0
+            format_rewards.append(3.0 if json_fraction == 1.0 else -3.0 * (1.0 - json_fraction))
+            valid_action_rewards.append((2.0 * valid_fraction) - 1.0)
             score_rewards.append(metrics.score)
             solved_rewards.append(1.0 if metrics.solved else 0.0)
             log_episode(metrics)
@@ -391,6 +421,8 @@ def main() -> None:
             "completion_ids": completion_batches,
             "logprobs": logprob_batches,
             "total_reward": total_rewards,
+            "format_reward": format_rewards,
+            "valid_action_reward": valid_action_rewards,
             "score_reward": score_rewards,
             "solved_reward": solved_rewards,
         }
@@ -439,12 +471,15 @@ def main() -> None:
     trainer = GRPOTrainer(
         model=trainer_model,
         processing_class=tokenizer,
-        reward_funcs=[reward_total, reward_score, reward_solved],
+        reward_funcs=[reward_format, reward_valid_action, reward_total, reward_score, reward_solved],
         train_dataset=dataset,
         args=grpo_config,
         rollout_func=rollout_func,
         peft_config=peft_config,
     )
+    trainer_model_ref = getattr(trainer, "model", None)
+    if trainer_model_ref is not None and getattr(trainer_model_ref, "config", None) is not None:
+        trainer_model_ref.config.use_cache = False
 
     logger.info("Starting FlowOS GRPO training")
     logger.info(
