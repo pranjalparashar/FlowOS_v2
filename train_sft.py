@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-path", default="outputs/sft_traces/traces.jsonl", help="JSONL trace file")
     parser.add_argument("--model-id", default="Qwen/Qwen2.5-1.5B-Instruct", help="Base instruct model")
     parser.add_argument("--output-dir", default="outputs/flowos-sft", help="Checkpoint output directory")
-    parser.add_argument("--learning-rate", type=float, default=2e-5, help="Learning rate")
+    parser.add_argument("--learning-rate", type=float, default=5e-6, help="Learning rate")
     parser.add_argument("--num-epochs", type=int, default=1, help="Training epochs")
     parser.add_argument("--per-device-train-batch-size", type=int, default=1, help="Per-device batch size")
     parser.add_argument("--gradient-accumulation-steps", type=int, default=4, help="Gradient accumulation")
@@ -154,30 +154,64 @@ class FlowOSSFTDataset:
             ],
             add_generation_prompt=True,
         )
-        full_text = prompt_text + sample["target_action"]
-
-        prompt_ids = self.tokenizer(
+        prompt_ids_full = self.tokenizer(
             prompt_text,
-            truncation=True,
-            max_length=self.max_seq_length,
             add_special_tokens=False,
         )["input_ids"]
-        full_encoding = self.tokenizer(
-            full_text,
-            truncation=True,
-            max_length=self.max_seq_length,
+        target_ids = self.tokenizer(
+            sample["target_action"],
             add_special_tokens=False,
-        )
-        input_ids = full_encoding["input_ids"]
-        attention_mask = full_encoding["attention_mask"]
-        prompt_len = min(len(prompt_ids), len(input_ids))
-        labels = [-100] * prompt_len + input_ids[prompt_len:]
+        )["input_ids"]
+
+        # Always preserve target tokens; truncate prompt first if needed.
+        if len(target_ids) >= self.max_seq_length:
+            target_ids = target_ids[: self.max_seq_length - 1]
+
+        available_prompt_tokens = max(1, self.max_seq_length - len(target_ids))
+        prompt_ids = prompt_ids_full[-available_prompt_tokens:]
+        input_ids = prompt_ids + target_ids
+        attention_mask = [1] * len(input_ids)
+        labels = ([-100] * len(prompt_ids)) + target_ids
 
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
             "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
             "labels": torch.tensor(labels, dtype=torch.long),
         }
+
+
+def summarize_truncation(
+    rows: list[dict[str, Any]],
+    tokenizer: Any,
+    max_seq_length: int,
+) -> dict[str, int]:
+    stats = {
+        "prompt_truncated_rows": 0,
+        "target_truncated_rows": 0,
+        "empty_target_rows": 0,
+        "max_prompt_tokens": 0,
+        "max_target_tokens": 0,
+    }
+    for row in rows:
+        prompt_text = apply_chat_template(
+            tokenizer,
+            [
+                {"role": "system", "content": row["system_prompt"]},
+                {"role": "user", "content": row["user_prompt"]},
+            ],
+            add_generation_prompt=True,
+        )
+        prompt_ids = tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
+        target_ids = tokenizer(row["target_action"], add_special_tokens=False)["input_ids"]
+        stats["max_prompt_tokens"] = max(stats["max_prompt_tokens"], len(prompt_ids))
+        stats["max_target_tokens"] = max(stats["max_target_tokens"], len(target_ids))
+        if len(target_ids) == 0:
+            stats["empty_target_rows"] += 1
+        if len(target_ids) >= max_seq_length:
+            stats["target_truncated_rows"] += 1
+        elif len(prompt_ids) + len(target_ids) > max_seq_length:
+            stats["prompt_truncated_rows"] += 1
+    return stats
 
 
 class SFTCollator:
@@ -229,6 +263,15 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(args.model_id)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    truncation_stats = summarize_truncation(rows, tokenizer, args.max_seq_length)
+    print(
+        "Truncation stats:",
+        truncation_stats,
+    )
+    if truncation_stats["empty_target_rows"] > 0:
+        raise SystemExit(
+            f"Found {truncation_stats['empty_target_rows']} rows with empty target_action. Fix the trace data first."
+        )
 
     if torch.cuda.is_available():
         os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
