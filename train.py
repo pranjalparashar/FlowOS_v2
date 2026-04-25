@@ -55,6 +55,11 @@ def _clean_preview(text: str, limit: int = 220) -> str:
     return normalized
 
 
+def with_timestamp_suffix(output_dir: str) -> str:
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    return f"{output_dir.rstrip('/')}-{timestamp}"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Minimal Colab-first GRPO training for FlowOS")
     parser.add_argument("--model-id", default=DEFAULT_TRAIN_MODEL, help="Base instruct model to fine-tune")
@@ -238,6 +243,8 @@ def upload_outputs(output_dir: Path, repo_id: str, repo_type: str, path_in_repo:
 
 def main() -> None:
     args = parse_args()
+    if args.output_dir is not None:
+        args.output_dir = with_timestamp_suffix(args.output_dir)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -263,7 +270,7 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     output_dir = Path(args.output_dir or Path("outputs") / f"flowos-grpo-{timestamp}")
     output_dir.mkdir(parents=True, exist_ok=True)
 

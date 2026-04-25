@@ -7,6 +7,7 @@ import csv
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +88,11 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
                 continue
             rows.append(json.loads(line))
     return rows
+
+
+def with_timestamp_suffix(output_dir: str) -> str:
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    return f"{output_dir.rstrip('/')}-{timestamp}"
 
 
 def filter_ranked_rows(
@@ -238,6 +244,7 @@ class SFTCollator:
 
 def main() -> None:
     args = parse_args()
+    args.output_dir = with_timestamp_suffix(args.output_dir)
 
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, Trainer, TrainingArguments
