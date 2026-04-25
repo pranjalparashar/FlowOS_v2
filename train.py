@@ -79,6 +79,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-steps", type=int, default=10, help="Checkpoint save interval")
     parser.add_argument("--logging-steps", type=int, default=1, help="Logging interval")
     parser.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature")
+    parser.add_argument(
+        "--log-step-rewards",
+        action="store_true",
+        help="Log each rollout step's action, reward, and feedback during GRPO training",
+    )
+    parser.add_argument(
+        "--rollout-backend",
+        default="manual",
+        choices=("manual", "trl"),
+        help="Generation backend for GRPO rollouts. 'manual' uses model.generate directly.",
+    )
     parser.add_argument("--lora-r", type=int, default=16, help="LoRA rank")
     parser.add_argument("--lora-alpha", type=int, default=32, help="LoRA alpha")
     parser.add_argument("--lora-dropout", type=float, default=0.05, help="LoRA dropout")
@@ -132,19 +143,22 @@ def generate_with_trainer(
     prompt_text: str,
     max_new_tokens: int,
     temperature: float,
+    rollout_backend: str,
 ) -> dict[str, Any]:
-    try:
-        from trl.experimental.openenv import generate_rollout_completions
+    if rollout_backend == "trl":
+        try:
+            from trl.experimental.openenv import generate_rollout_completions
 
-        episode = generate_rollout_completions(trainer, [prompt_text], max_new_tokens=max_new_tokens)[0]
-        return {
-            "prompt_ids": list(episode.get("prompt_ids", [])),
-            "completion_ids": list(episode.get("completion_ids", [])),
-            "logprobs": list(episode.get("logprobs", [])),
-            "text": episode.get("text") or tokenizer.decode(episode.get("completion_ids", []), skip_special_tokens=True),
-        }
-    except Exception:
-        pass
+            episode = generate_rollout_completions(trainer, [prompt_text], max_new_tokens=max_new_tokens)[0]
+            return {
+                "prompt_ids": list(episode.get("prompt_ids", [])),
+                "completion_ids": list(episode.get("completion_ids", [])),
+                "logprobs": list(episode.get("logprobs", [])),
+                "text": episode.get("text")
+                or tokenizer.decode(episode.get("completion_ids", []), skip_special_tokens=True),
+            }
+        except Exception as exc:
+            logger.warning("TRL rollout generation failed; falling back to manual generation: %s", exc)
 
     import torch
 
@@ -277,6 +291,17 @@ def main() -> None:
             metrics.solved,
             metrics.steps,
         )
+        if args.log_step_rewards:
+            for step_idx, entry in enumerate(metrics.transcript, start=1):
+                logger.info(
+                    "Episode %s step=%s reward=%.3f action=%s feedback=%s error=%s",
+                    episode_counter[0],
+                    step_idx,
+                    float(entry.get("reward", 0.0)),
+                    entry.get("action_text", "invalid_action()"),
+                    entry.get("feedback") or "none",
+                    entry.get("error") or "null",
+                )
         artifact_dir = persist_episode_artifacts(artifact_output_dir, metrics)
         if artifact_dir is not None:
             logger.info("Saved episode artifacts to %s", artifact_dir)
@@ -308,6 +333,7 @@ def main() -> None:
                     prompt_text=prompt_text,
                     max_new_tokens=args.max_new_tokens,
                     temperature=args.temperature,
+                    rollout_backend=args.rollout_backend,
                 )
                 parsed_action = parse_action_json(generation["text"])
                 valid_action = action_is_valid(parsed_action, observation)
