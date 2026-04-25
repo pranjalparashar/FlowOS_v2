@@ -546,6 +546,44 @@ TASK_DEFINITIONS: dict[str, dict] = {
         "grader_family": "simulation",
         "scenario_ids": ["SIM-001", "SIM-002", "SIM-003", "SIM-004", "SIM-005", "SIM-006", "SIM-007"],
     },
+    "simulate_csv_report_curriculum_generate": {
+        "id": "simulate_csv_report_curriculum_generate",
+        "name": "Task 8: Easy CSV Workflow Generation",
+        "difficulty": "easy",
+        "max_steps": 8,
+        "score_range": [0.0, 1.0],
+        "description": "Create a tiny CSV-to-report workflow with a very small daily aggregation.",
+        "available_actions": [
+            "search_workspace",
+            "read_file",
+            "inspect_schema",
+            "edit_file",
+            "run_validator",
+            "submit_workspace",
+        ],
+        "submission_action": "submit_workspace",
+        "grader_family": "simulation",
+        "scenario_ids": ["SIM-E001"],
+    },
+    "simulate_csv_report_curriculum_repair": {
+        "id": "simulate_csv_report_curriculum_repair",
+        "name": "Task 9: Easy CSV Workflow Repair",
+        "difficulty": "easy",
+        "max_steps": 8,
+        "score_range": [0.0, 1.0],
+        "description": "Repair a tiny CSV workflow where one final-view bug prevents success.",
+        "available_actions": [
+            "search_workspace",
+            "read_file",
+            "inspect_schema",
+            "edit_file",
+            "run_validator",
+            "submit_workspace",
+        ],
+        "submission_action": "submit_workspace",
+        "grader_family": "simulation",
+        "scenario_ids": ["SIM-E002"],
+    },
 }
 
 ALL_TASKS = TASK_DEFINITIONS
@@ -2597,6 +2635,172 @@ required_columns:
         ),
     ],
     "simulation_workflow": [
+        simulation_scenario(
+            scenario_id="SIM-E001",
+            developer_request=(
+                "Create the simplest possible daily signup report from this CSV. "
+                "Stage the file, load it into DuckDB, and publish a final daily report view."
+            ),
+            workspace_summary=(
+                "This is the easiest curriculum workspace. Build a tiny pipeline that only counts signups per day. "
+                "The same four workflow files exist, but the SQL should stay very small."
+            ),
+            source_csv_path="data/daily_signups.csv",
+            source_csv_content="""signup_id,signup_date,channel
+S001,2026-04-01,organic
+S002,2026-04-01,paid
+S003,2026-04-02,organic
+S004,2026-04-02,referral
+""",
+            raw_table="raw_daily_signups",
+            staged_view="staged_daily_signups",
+            build_table="daily_signup_counts",
+            final_view="daily_signup_report",
+            raw_asset="raw.daily_signups_csv",
+            final_asset="mart.daily_signup_report",
+            date_column="signup_date",
+            raw_schema_columns=[
+                ("signup_id", "string"),
+                ("signup_date", "date"),
+                ("channel", "string"),
+            ],
+            required_output_columns=[
+                "signup_date",
+                "signup_count",
+            ],
+            build_metric_groups=[
+                ["count(*) as signup_count", "count(*) signup_count"],
+            ],
+            report_terms=["daily_signup_report", "DuckDB", "signup_count"],
+            correct_load_sql="""create or replace view staged_daily_signups as
+select
+  signup_id,
+  cast(signup_date as date) as signup_date,
+  channel
+from raw_daily_signups;
+""",
+            correct_build_sql="""create or replace table daily_signup_counts as
+select
+  signup_date,
+  count(*) as signup_count
+from staged_daily_signups
+group by 1;
+""",
+            correct_report_sql="""create or replace view daily_signup_report as
+select
+  signup_date,
+  signup_count
+from daily_signup_counts;
+""",
+            expected_raw_preview=[
+                {"signup_id": "S001", "signup_date": "2026-04-01", "channel": "organic"},
+                {"signup_id": "S002", "signup_date": "2026-04-01", "channel": "paid"},
+            ],
+            expected_derived_preview=[
+                {"signup_date": "2026-04-01", "signup_count": 2},
+            ],
+            expected_final_preview=[
+                {"signup_date": "2026-04-02", "signup_count": 2},
+            ],
+        ),
+        simulation_scenario(
+            scenario_id="SIM-E002",
+            developer_request=(
+                "Repair this tiny signup report workflow. The pipeline is almost correct, but the final report view "
+                "does not match the expected contract."
+            ),
+            workspace_summary=(
+                "This is the easiest repair curriculum workspace. Almost everything is correct already; "
+                "Fixer only needs to repair the final view so the runtime and schema checks pass."
+            ),
+            source_csv_path="data/daily_signups.csv",
+            source_csv_content="""signup_id,signup_date,channel
+S001,2026-04-01,organic
+S002,2026-04-01,paid
+S003,2026-04-02,organic
+S004,2026-04-02,referral
+""",
+            raw_table="raw_daily_signups",
+            staged_view="staged_daily_signups",
+            build_table="daily_signup_counts",
+            final_view="daily_signup_report",
+            raw_asset="raw.daily_signups_csv",
+            final_asset="mart.daily_signup_report",
+            date_column="signup_date",
+            raw_schema_columns=[
+                ("signup_id", "string"),
+                ("signup_date", "date"),
+                ("channel", "string"),
+            ],
+            required_output_columns=[
+                "signup_date",
+                "signup_count",
+            ],
+            build_metric_groups=[
+                ["count(*) as signup_count", "count(*) signup_count"],
+            ],
+            report_terms=["daily_signup_report", "DuckDB", "signup_count"],
+            correct_load_sql="""create or replace view staged_daily_signups as
+select
+  signup_id,
+  cast(signup_date as date) as signup_date,
+  channel
+from raw_daily_signups;
+""",
+            correct_build_sql="""create or replace table daily_signup_counts as
+select
+  signup_date,
+  count(*) as signup_count
+from staged_daily_signups
+group by 1;
+""",
+            correct_report_sql="""create or replace view daily_signup_report as
+select
+  signup_date,
+  signup_count
+from daily_signup_counts;
+""",
+            starter_files={
+                "pipelines/report_job.yaml": """name: daily_signup_report_job
+storage_path: mock_s3/staged/daily_signups.csv
+raw_table: raw_daily_signups
+load_sql: sql/load_raw.sql
+build_sql: sql/build_table.sql
+report_sql: sql/report_view.sql
+final_view: daily_signup_report
+""",
+                "sql/load_raw.sql": """create or replace view staged_daily_signups as
+select
+  signup_id,
+  cast(signup_date as date) as signup_date,
+  channel
+from raw_daily_signups;
+""",
+                "sql/build_table.sql": """create or replace table daily_signup_counts as
+select
+  signup_date,
+  count(*) as signup_count
+from staged_daily_signups
+group by 1;
+""",
+                "sql/report_view.sql": """create or replace view daily_signup_report as
+select
+  signup_date,
+  signup_count as signups
+from daily_signup_counts;
+""",
+            },
+            expected_raw_preview=[
+                {"signup_id": "S001", "signup_date": "2026-04-01", "channel": "organic"},
+                {"signup_id": "S002", "signup_date": "2026-04-01", "channel": "paid"},
+            ],
+            expected_derived_preview=[
+                {"signup_date": "2026-04-01", "signup_count": 2},
+            ],
+            expected_final_preview=[
+                {"signup_date": "2026-04-02", "signup_count": 2},
+            ],
+        ),
         simulation_scenario(
             scenario_id="SIM-001",
             developer_request=(
