@@ -10,7 +10,7 @@ from typing import Any
 
 try:
     from .baseline import fallback_action
-    from .tasks import TASK_DEFINITIONS
+    from .tasks import get_scenario
     from .training_utils import (
         TRAIN_SYSTEM_PROMPT,
         build_episode_samples,
@@ -24,7 +24,7 @@ try:
     from .client import DeveloperControlRoomEnv
 except ImportError:
     from baseline import fallback_action
-    from tasks import TASK_DEFINITIONS
+    from tasks import get_scenario
     from training_utils import (
         TRAIN_SYSTEM_PROMPT,
         build_episode_samples,
@@ -62,7 +62,7 @@ def _compute_trace_rank(
     transcript: list[dict[str, Any]],
     observation: Any,
 ) -> tuple[float, dict[str, float]]:
-    scenario = TASK_DEFINITIONS[sample.task_id]["scenarios"][sample.scenario_index]
+    scenario = get_scenario(sample.task_id, sample.scenario_index, sample.seed)
     simulation_target = scenario.get("simulation_target", {}) or scenario.get("llm_draft", {}).get("simulation_target", {})
     runtime_status = dict(getattr(observation, "runtime_status", {}))
     checks = dict(runtime_status.get("checks", {}))
