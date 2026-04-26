@@ -218,20 +218,19 @@ The repository now saves:
 - fallback-step and valid-model-step comparisons,
 - generated pipeline artifacts for inspection.
 
-Replace the placeholders below with the final PNGs from your latest run:
+Latest plots from the current run:
 
-- `ADD_TRAINING_LOSS_PLOT_HERE`
-- `ADD_EVAL_SCORE_PLOT_HERE`
-- `ADD_EVAL_SOLVED_RATE_PLOT_HERE`
-- `ADD_BASELINE_VS_TRAINED_TABLE_HERE`
+![SFT training loss](https://huggingface.co/spaces/praanjal/flowOs_v2/resolve/main/plots/train/sft_training_loss.png)
 
-Recommended final README embed format:
+![Average reward by policy](https://huggingface.co/spaces/praanjal/flowOs_v2/resolve/main/plots/eval/eval_avg_reward%20%281%29.png)
 
-```md
-![SFT training loss](assets/plots/sft_training_loss.png)
-![Average score by policy](assets/plots/eval_avg_score.png)
-![Solved rate by policy](assets/plots/eval_solved_rate.png)
-```
+![Average score by policy](https://huggingface.co/spaces/praanjal/flowOs_v2/resolve/main/plots/eval/eval_avg_score.png)
+
+| Policy | Avg Reward | Avg Score | Solved Rate | Avg Steps |
+| --- | ---: | ---: | ---: | ---: |
+| Base | -0.300 | 0.279 | 0.00% | 12.00 |
+| Tuned | 0.100 | 0.516 | 0.00% | 12.00 |
+
 
 ## How to try the environment
 
