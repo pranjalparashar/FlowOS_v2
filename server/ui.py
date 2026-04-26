@@ -102,6 +102,46 @@ def _format_runtime_debug(observation: dict[str, Any]) -> tuple[str, str]:
     return runtime_md, log_md
 
 
+def _friendly_status(observation: dict[str, Any], phase: str) -> str:
+    if not observation:
+        return f"Status: {phase}"
+    if observation.get("last_action_error"):
+        return f"Status: Needs attention - {observation['last_action_error']}"
+    if observation.get("execution_logs"):
+        return f"Status: {phase} - pipeline produced runtime steps."
+    return f"Status: {phase}"
+
+
+def _compact_timeline(observation: dict[str, Any], preface_steps: list[str]) -> str:
+    lines = [f"{idx + 1}. {text}" for idx, text in enumerate(preface_steps)]
+    logs = observation.get("execution_logs") or []
+    if logs:
+        offset = len(lines)
+        lines.extend([f"{offset + idx + 1}. {line}" for idx, line in enumerate(logs[:12])])
+    if not lines:
+        return "No run yet. Choose task and scenario, then press Run Demo."
+    return "\n".join(lines)
+
+
+def _demo_action_payload(fields: dict[str, Any]) -> dict[str, str]:
+    source_csv = fields.get("source_csv") or "data/source.csv"
+    raw_table = fields.get("raw_table") or "raw_demo"
+    final_view = fields.get("final_view") or "final_demo"
+    content = "\n".join(
+        [
+            f"name: {final_view}_job",
+            f"storage_path: mock_s3/staged/{source_csv.split('/')[-1]}",
+            f"raw_table: {raw_table}",
+            "load_sql: sql/load_raw.sql",
+            "build_sql: sql/build_table.sql",
+            "report_sql: sql/report_view.sql",
+            f"final_view: {final_view}",
+            "",
+        ]
+    )
+    return {"path": "pipelines/report_job.yaml", "content": content}
+
+
 def _dropdown_update(value: str, choices: list[str]) -> dict[str, Any]:
     normalized_choices = [str(choice) for choice in (choices or []) if str(choice)]
     normalized_value = str(value or "")
@@ -113,6 +153,10 @@ def _dropdown_update(value: str, choices: list[str]) -> dict[str, Any]:
     elif not normalized_value:
         normalized_value = normalized_choices[0]
     return gr.update(choices=normalized_choices, value=normalized_value)
+
+
+def _textbox_update(value: str) -> dict[str, Any]:
+    return gr.update(value=str(value or ""))
 
 
 def build_developer_control_room_ui(
@@ -261,44 +305,6 @@ def build_developer_control_room_ui(
     }
     """
 
-    async def reset_env(task_id: str, scenario_index: int):
-        try:
-            data = await web_manager.reset_environment(
-                {"task_id": task_id, "scenario_index": scenario_index}
-            )
-            return (
-                _pretty_json(data.get("observation", {})),
-                _pretty_json(data),
-                "Reset complete.",
-            )
-        except Exception as exc:
-            return ("", "", f"Reset error: {exc}")
-
-    async def step_env(action_type: str, params_json: str):
-        try:
-            parameters = _safe_json(params_json)
-        except Exception as exc:
-            return ("", "", f"Invalid JSON: {exc}")
-
-        payload = {"action_type": action_type, "parameters": parameters}
-        try:
-            data = await web_manager.step_environment(payload)
-            return (
-                _pretty_json(data.get("observation", {})),
-                _pretty_json(data),
-                "Step complete.",
-            )
-        except Exception as exc:
-            return ("", "", f"Step error: {exc}")
-
-    def get_state_sync():
-        try:
-            state = web_manager.get_state()
-            runtime_md, log_md = _format_runtime_debug(state)
-            return _pretty_json(state), runtime_md, log_md, "State refreshed."
-        except Exception as exc:
-            return f"State error: {exc}", "Runtime status: unavailable", f"State error: {exc}", f"State error: {exc}"
-
     def on_task_change(task_id: str):
         scenario_ids = _scenario_ids_for_task(task_id)
         scenario_value = scenario_ids[0] if scenario_ids else ""
@@ -306,41 +312,66 @@ def build_developer_control_room_ui(
         validators = fields["validators"] or []
         return (
             _dropdown_update(scenario_value, scenario_ids),
-            _dropdown_update(fields["source_csv"], [fields["source_csv"]]),
-            _dropdown_update(fields["raw_table"], [fields["raw_table"]]),
-            _dropdown_update(fields["final_view"], [fields["final_view"]]),
-            _dropdown_update(validators[0] if validators else "", validators),
+            _textbox_update(fields["source_csv"]),
+            _textbox_update(fields["raw_table"]),
+            _textbox_update(fields["final_view"]),
+            _textbox_update(validators[0] if validators else ""),
+            "Status: Ready - press Run Demo.",
+            "No run yet. Choose task and scenario, then press Run Demo.",
         )
 
     def on_scenario_change(task_id: str, scenario_id: str):
         fields = _simulation_fields_for(task_id, scenario_id)
         validators = fields["validators"] or []
         return (
-            _dropdown_update(fields["source_csv"], [fields["source_csv"]]),
-            _dropdown_update(fields["raw_table"], [fields["raw_table"]]),
-            _dropdown_update(fields["final_view"], [fields["final_view"]]),
-            _dropdown_update(validators[0] if validators else "", validators),
+            _textbox_update(fields["source_csv"]),
+            _textbox_update(fields["raw_table"]),
+            _textbox_update(fields["final_view"]),
+            _textbox_update(validators[0] if validators else ""),
+            "Status: Ready - press Run Demo.",
+            "No run yet. Choose task and scenario, then press Run Demo.",
         )
 
-    async def reset_from_preset(task_id: str, scenario_id: str):
+    async def run_demo(task_id: str, scenario_id: str):
         scenario_ids = _scenario_ids_for_task(task_id)
         scenario_index = scenario_ids.index(scenario_id) if scenario_id in scenario_ids else 0
-        obs_json, raw, status_text = await reset_env(task_id, scenario_index)
+        fields = _simulation_fields_for(task_id, scenario_id)
+        timeline_prefix = [
+            f"Loaded scenario `{scenario_id or 'default'}`",
+            "Reset environment",
+        ]
         try:
-            observation = _safe_json(obs_json)
+            reset_data = await web_manager.reset_environment(
+                {"task_id": task_id, "scenario_index": scenario_index}
+            )
+            observation = reset_data.get("observation", {})
         except Exception:
-            observation = {}
-        runtime_md, log_md = _format_runtime_debug(observation)
-        return obs_json, raw, status_text, runtime_md, log_md
+            return "Status: Needs attention - failed to reset environment.", "1. Reset failed. Please retry."
 
-    async def step_with_debug(action_type: str, params_json: str):
-        obs_json, raw, status_text = await step_env(action_type, params_json)
-        try:
-            observation = _safe_json(obs_json)
-        except Exception:
-            observation = {}
-        runtime_md, log_md = _format_runtime_debug(observation)
-        return obs_json, raw, status_text, runtime_md, log_md
+        demo_steps = [
+            ("read_file", {"path": "docs/runtime_contract.md"}, "Reviewed runtime contract"),
+            ("edit_file", _demo_action_payload(fields), "Applied pipeline preset"),
+        ]
+        first_validator = (fields.get("validators") or [""])[0]
+        if first_validator:
+            demo_steps.append(
+                ("run_validator", {"validator": first_validator}, f"Ran validator `{first_validator}`")
+            )
+
+        for action_type, params, label in demo_steps:
+            try:
+                step_data = await web_manager.step_environment(
+                    {"action_type": action_type, "parameters": params}
+                )
+                observation = step_data.get("observation", observation)
+                timeline_prefix.append(label)
+            except Exception as exc:
+                timeline_prefix.append(f"{label} failed: {exc}")
+                break
+
+        status_text = _friendly_status(observation, "Completed")
+        timeline_text = _compact_timeline(observation, timeline_prefix)
+        return status_text, timeline_text
 
     with gr.Blocks(title=display_title) as demo:
         gr.HTML(f"<style>{css}</style>")
@@ -359,117 +390,74 @@ def build_developer_control_room_ui(
 
         with gr.Row():
             with gr.Column(scale=3):
-                gr.HTML("<div class='dcr-chip-row'><span class='dcr-chip'><strong>Port</strong> 7860</span><span class='dcr-chip'><strong>Mode</strong> Single-page UI</span></div>")
                 with gr.Group(elem_classes="dcr-panel"):
-                    gr.HTML("<div class='dcr-panel-title'>Create Pipeline</div>")
-                    gr.HTML("<div class='dcr-side-note'>Select a pipeline task and scenario. Downstream fields are preset from scenario metadata.</div>")
+                    gr.HTML("<div class='dcr-panel-title'>Step 1 / Step 2</div>")
+                    gr.HTML("<div class='dcr-side-note'>Choose a pipeline task and scenario. Then run the guided demo with one click.</div>")
                     task_id = gr.Dropdown(
                         choices=pipeline_task_ids,
                         value=default_task_id,
-                        label="Task",
+                        label="Step 1: Task",
                     )
                     scenario_id = gr.Dropdown(
                         choices=default_scenarios,
                         value=default_scenario_id,
-                        label="Scenario",
+                        label="Step 2: Scenario",
                     )
-                    source_csv = gr.Dropdown(
-                        choices=[default_fields["source_csv"]] if default_fields["source_csv"] else [""],
+                    source_csv = gr.Textbox(
                         value=default_fields["source_csv"] or "",
-                        label="Source CSV (preset)",
+                        label="Source CSV",
                         interactive=False,
                     )
-                    raw_table = gr.Dropdown(
-                        choices=[default_fields["raw_table"]] if default_fields["raw_table"] else [""],
+                    raw_table = gr.Textbox(
                         value=default_fields["raw_table"] or "",
-                        label="Raw Table (preset)",
+                        label="Raw Table",
                         interactive=False,
                     )
-                    final_view = gr.Dropdown(
-                        choices=[default_fields["final_view"]] if default_fields["final_view"] else [""],
+                    final_view = gr.Textbox(
                         value=default_fields["final_view"] or "",
-                        label="Final View (preset)",
+                        label="Final View",
                         interactive=False,
                     )
-                    validator_profile = gr.Dropdown(
-                        choices=default_fields["validators"] or [""],
+                    validator_profile = gr.Textbox(
                         value=(default_fields["validators"][0] if default_fields["validators"] else ""),
-                        label="Validator Profile (preset)",
+                        label="Validator Profile",
                         interactive=False,
                     )
-                    reset_btn = gr.Button("Reset Episode", elem_classes="dcr-btn-secondary")
+                    run_demo_btn = gr.Button("Step 3: Run Demo", elem_classes="dcr-btn-primary")
 
                 with gr.Group(elem_classes="dcr-panel"):
-                    gr.HTML("<div class='dcr-panel-title'>Action Composer</div>")
-                    gr.HTML("<div class='dcr-side-note'>Use exact action names and JSON params. This is intentionally close to the raw FlowOS benchmark surface.</div>")
-                    action_type = gr.Dropdown(
-                        choices=[
-                            "search_workspace",
-                            "read_file",
-                            "inspect_schema",
-                            "inspect_lineage",
-                            "inspect_llm_draft",
-                            "edit_file",
-                            "run_validator",
-                            "submit_repair",
-                            "submit_review",
-                            "submit_workspace",
-                        ],
-                        value="read_file",
-                        label="Action Type",
-                    )
-                    params_json = gr.Code(
-                        value='{"path":"transforms/orders_daily.sql"}',
-                        label="Action Parameters (JSON)",
-                        language="json",
-                        elem_classes="dcr-json",
-                    )
-                    with gr.Row():
-                        step_btn = gr.Button("Send Action", elem_classes="dcr-btn-primary")
-                        state_btn = gr.Button("Get State", elem_classes="dcr-btn-secondary")
-
-                with gr.Group(elem_classes="dcr-status"):
-                    status = gr.Textbox(label="Status", interactive=False, container=False)
-                with gr.Group(elem_classes="dcr-panel"):
-                    gr.HTML("<div class='dcr-panel-title'>Pipeline Status / Debug Steps</div>")
-                    pipeline_runtime = gr.Markdown("Runtime status: idle")
-                    pipeline_steps = gr.Markdown("No pipeline execution yet.")
+                    gr.HTML("<div class='dcr-panel-title'>Run Status</div>")
+                    pipeline_runtime = gr.Markdown("Status: Ready - press Run Demo.")
+                    pipeline_steps = gr.Markdown("No run yet. Choose task and scenario, then press Run Demo.")
 
             with gr.Column(scale=4):
                 with gr.Group(elem_classes="dcr-panel"):
-                    gr.HTML("<div class='dcr-panel-title'>Observation</div>")
-                    obs_display = gr.Code(label="Observation", language="json", value="")
-                with gr.Group(elem_classes="dcr-panel"):
-                    gr.HTML("<div class='dcr-panel-title'>Raw JSON</div>")
-                    raw_json = gr.Code(label="Raw Response", language="json", value="")
+                    gr.HTML("<div class='dcr-panel-title'>How this works</div>")
+                    gr.Markdown(
+                        "1. Pick a task and scenario.\n"
+                        "2. Review preset pipeline settings.\n"
+                        "3. Press **Run Demo** to execute a guided run.\n\n"
+                        "The timeline updates automatically - no manual refresh needed."
+                    )
                 if quick_start_md:
                     with gr.Group(elem_classes="dcr-panel"):
                         gr.HTML("<div class='dcr-panel-title'>Quick Start</div>")
                         gr.Markdown(quick_start_md)
 
-        reset_btn.click(
-            fn=reset_from_preset,
+        run_demo_btn.click(
+            fn=run_demo,
             inputs=[task_id, scenario_id],
-            outputs=[obs_display, raw_json, status, pipeline_runtime, pipeline_steps],
-        )
-        step_btn.click(
-            fn=step_with_debug,
-            inputs=[action_type, params_json],
-            outputs=[obs_display, raw_json, status, pipeline_runtime, pipeline_steps],
-        )
-        state_btn.click(
-            fn=get_state_sync,
-            outputs=[raw_json, pipeline_runtime, pipeline_steps, status],
+            outputs=[pipeline_runtime, pipeline_steps],
         )
         task_id.change(
             fn=on_task_change,
             inputs=[task_id],
-            outputs=[scenario_id, source_csv, raw_table, final_view, validator_profile],
+            outputs=[scenario_id, source_csv, raw_table, final_view, validator_profile, pipeline_runtime, pipeline_steps],
         )
         scenario_id.change(
             fn=on_scenario_change,
             inputs=[task_id, scenario_id],
-            outputs=[source_csv, raw_table, final_view, validator_profile],
+            outputs=[source_csv, raw_table, final_view, validator_profile, pipeline_runtime, pipeline_steps],
         )
 
     return demo
