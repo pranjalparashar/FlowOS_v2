@@ -264,7 +264,7 @@ Please link all final materials here before submission:
 
 - Hugging Face Space: [https://praanjal-flowos-v2.hf.space](https://praanjal-flowos-v2.hf.space)
 - Hugging Face blog: `https://huggingface.co/spaces/praanjal/flowOs_v2/blob/main/blog.md`
-- Colab notebook: `https://huggingface.co/spaces/praanjal/flowOs_v2/blob/main/train.ipynb`
+- Kaggle notebook: [final-notebook](https://www.kaggle.com/code/pranjal1805/final-notebook)
 
 ## Future multi-agent architecture
 
