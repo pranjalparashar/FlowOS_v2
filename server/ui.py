@@ -7,6 +7,11 @@ from typing import Any, Dict, List, Optional
 
 import gradio as gr
 
+try:
+    from ..tasks import get_scenario, get_task
+except ImportError:
+    from tasks import get_scenario, get_task
+
 
 def _pretty_json(payload: Dict[str, Any]) -> str:
     return json.dumps(payload, indent=2, ensure_ascii=False)
@@ -17,6 +22,84 @@ def _safe_json(text: str) -> Dict[str, Any]:
     if not text:
         return {}
     return json.loads(text)
+
+
+def _scenario_ids_for_task(task_id: str) -> list[str]:
+    try:
+        task = get_task(task_id)
+    except Exception:
+        return []
+    scenario_ids = task.get("scenario_ids") or []
+    return [str(sid) for sid in scenario_ids]
+
+
+def _pipeline_task_choices() -> list[str]:
+    candidate_ids = [
+        "simulate_csv_report_workflow",
+        "simulate_csv_report_curriculum_generate",
+        "simulate_csv_report_curriculum_repair",
+    ]
+    valid: list[str] = []
+    for task_id in candidate_ids:
+        if _scenario_ids_for_task(task_id):
+            valid.append(task_id)
+    return valid
+
+
+def _simulation_fields_for(task_id: str, scenario_id: str) -> dict[str, Any]:
+    scenario_ids = _scenario_ids_for_task(task_id)
+    if scenario_id not in scenario_ids:
+        return {
+            "source_csv": "",
+            "raw_table": "",
+            "final_view": "",
+            "validators": [],
+        }
+
+    try:
+        scenario_index = scenario_ids.index(scenario_id)
+        scenario = get_scenario(task_id, scenario_index)
+    except Exception:
+        return {
+            "source_csv": "",
+            "raw_table": "",
+            "final_view": "",
+            "validators": [],
+        }
+
+    target = scenario.get("simulation_target", {})
+    return {
+        "source_csv": str(target.get("source_csv", "")),
+        "raw_table": str(target.get("expected_raw_table", {}).get("name", "")),
+        "final_view": str(target.get("expected_final_view", {}).get("name", "")),
+        "validators": [str(v) for v in scenario.get("available_validators", [])],
+    }
+
+
+def _format_runtime_debug(observation: dict[str, Any]) -> tuple[str, str]:
+    if not observation:
+        return "Runtime status: idle", "No pipeline execution yet."
+
+    runtime_status = observation.get("runtime_status") or {}
+    logs = observation.get("execution_logs") or []
+    step_count = observation.get("step_count", 0)
+    last_error = observation.get("last_action_error")
+
+    status_parts = [f"**Step:** {step_count}"]
+    if runtime_status:
+        status_parts.append(f"**Runtime:** `{json.dumps(runtime_status, ensure_ascii=False)}`")
+    else:
+        status_parts.append("**Runtime:** idle")
+    if last_error:
+        status_parts.append(f"**Error:** `{last_error}`")
+    runtime_md = " | ".join(status_parts)
+
+    if not logs:
+        log_md = "No pipeline execution yet."
+    else:
+        rendered = [f"{idx + 1}. {line}" for idx, line in enumerate(logs)]
+        log_md = "\n".join(rendered[-25:])
+    return runtime_md, log_md
 
 
 def build_developer_control_room_ui(
@@ -30,6 +113,17 @@ def build_developer_control_room_ui(
     del action_fields, is_chat_env
 
     display_title = title
+    pipeline_task_ids = _pipeline_task_choices()
+    if not pipeline_task_ids:
+        pipeline_task_ids = ["simulate_csv_report_workflow"]
+    default_task_id = (
+        "simulate_csv_report_workflow"
+        if "simulate_csv_report_workflow" in pipeline_task_ids
+        else (pipeline_task_ids[0] if pipeline_task_ids else "simulate_csv_report_workflow")
+    )
+    default_scenarios = _scenario_ids_for_task(default_task_id)
+    default_scenario_id = default_scenarios[0] if default_scenarios else ""
+    default_fields = _simulation_fields_for(default_task_id, default_scenario_id)
 
     css = """
     :root {
@@ -186,9 +280,54 @@ def build_developer_control_room_ui(
 
     def get_state_sync():
         try:
-            return _pretty_json(web_manager.get_state())
+            state = web_manager.get_state()
+            runtime_md, log_md = _format_runtime_debug(state)
+            return _pretty_json(state), runtime_md, log_md, "State refreshed."
         except Exception as exc:
-            return f"State error: {exc}"
+            return f"State error: {exc}", "Runtime status: unavailable", f"State error: {exc}", f"State error: {exc}"
+
+    def on_task_change(task_id: str):
+        scenario_ids = _scenario_ids_for_task(task_id)
+        scenario_value = scenario_ids[0] if scenario_ids else ""
+        fields = _simulation_fields_for(task_id, scenario_value)
+        validators = fields["validators"] or [""]
+        return (
+            gr.Dropdown(choices=scenario_ids, value=scenario_value),
+            gr.Dropdown(choices=[fields["source_csv"]] if fields["source_csv"] else [""], value=fields["source_csv"] or ""),
+            gr.Dropdown(choices=[fields["raw_table"]] if fields["raw_table"] else [""], value=fields["raw_table"] or ""),
+            gr.Dropdown(choices=[fields["final_view"]] if fields["final_view"] else [""], value=fields["final_view"] or ""),
+            gr.Dropdown(choices=validators, value=validators[0]),
+        )
+
+    def on_scenario_change(task_id: str, scenario_id: str):
+        fields = _simulation_fields_for(task_id, scenario_id)
+        validators = fields["validators"] or [""]
+        return (
+            gr.Dropdown(choices=[fields["source_csv"]] if fields["source_csv"] else [""], value=fields["source_csv"] or ""),
+            gr.Dropdown(choices=[fields["raw_table"]] if fields["raw_table"] else [""], value=fields["raw_table"] or ""),
+            gr.Dropdown(choices=[fields["final_view"]] if fields["final_view"] else [""], value=fields["final_view"] or ""),
+            gr.Dropdown(choices=validators, value=validators[0]),
+        )
+
+    async def reset_from_preset(task_id: str, scenario_id: str):
+        scenario_ids = _scenario_ids_for_task(task_id)
+        scenario_index = scenario_ids.index(scenario_id) if scenario_id in scenario_ids else 0
+        obs_json, raw, status_text = await reset_env(task_id, scenario_index)
+        try:
+            observation = _safe_json(obs_json)
+        except Exception:
+            observation = {}
+        runtime_md, log_md = _format_runtime_debug(observation)
+        return obs_json, raw, status_text, runtime_md, log_md
+
+    async def step_with_debug(action_type: str, params_json: str):
+        obs_json, raw, status_text = await step_env(action_type, params_json)
+        try:
+            observation = _safe_json(obs_json)
+        except Exception:
+            observation = {}
+        runtime_md, log_md = _format_runtime_debug(observation)
+        return obs_json, raw, status_text, runtime_md, log_md
 
     with gr.Blocks(title=display_title) as demo:
         gr.HTML(f"<style>{css}</style>")
@@ -196,7 +335,7 @@ def build_developer_control_room_ui(
             f"""
             <section class="dcr-hero">
               <div class="dcr-kicker">FlowOS / Interactive Workspace / End-to-End Ops</div>
-              <div class="dcr-title">{display_title}</div>
+              <div class="dcr-title">flowOS</div>
               <div class="dcr-subtitle">
                 Explore repair, review, and shipping in one live operating environment.
                 FlowOS is built to evaluate how AI agents move real work from broken to shipped.
@@ -209,21 +348,42 @@ def build_developer_control_room_ui(
             with gr.Column(scale=3):
                 gr.HTML("<div class='dcr-chip-row'><span class='dcr-chip'><strong>Port</strong> 7860</span><span class='dcr-chip'><strong>Mode</strong> Single-page UI</span></div>")
                 with gr.Group(elem_classes="dcr-panel"):
-                    gr.HTML("<div class='dcr-panel-title'>Scenario Control</div>")
-                    gr.HTML("<div class='dcr-side-note'>Pick a FlowOS task, reset the episode, then drive the environment with direct JSON actions.</div>")
+                    gr.HTML("<div class='dcr-panel-title'>Create Pipeline</div>")
+                    gr.HTML("<div class='dcr-side-note'>Select a pipeline task and scenario. Downstream fields are preset from scenario metadata.</div>")
                     task_id = gr.Dropdown(
-                        choices=[
-                            "repair_data_transform",
-                            "repair_pipeline_execution",
-                            "review_ai_patch_safety",
-                            "review_ai_patch_correctness",
-                            "synthesize_reporting_asset",
-                            "synthesize_data_product",
-                        ],
-                        value="repair_data_transform",
+                        choices=pipeline_task_ids,
+                        value=default_task_id,
                         label="Task",
                     )
-                    scenario_index = gr.Number(value=0, label="Scenario Index", precision=0)
+                    scenario_id = gr.Dropdown(
+                        choices=default_scenarios,
+                        value=default_scenario_id,
+                        label="Scenario",
+                    )
+                    source_csv = gr.Dropdown(
+                        choices=[default_fields["source_csv"]] if default_fields["source_csv"] else [""],
+                        value=default_fields["source_csv"] or "",
+                        label="Source CSV (preset)",
+                        interactive=False,
+                    )
+                    raw_table = gr.Dropdown(
+                        choices=[default_fields["raw_table"]] if default_fields["raw_table"] else [""],
+                        value=default_fields["raw_table"] or "",
+                        label="Raw Table (preset)",
+                        interactive=False,
+                    )
+                    final_view = gr.Dropdown(
+                        choices=[default_fields["final_view"]] if default_fields["final_view"] else [""],
+                        value=default_fields["final_view"] or "",
+                        label="Final View (preset)",
+                        interactive=False,
+                    )
+                    validator_profile = gr.Dropdown(
+                        choices=default_fields["validators"] or [""],
+                        value=(default_fields["validators"][0] if default_fields["validators"] else ""),
+                        label="Validator Profile (preset)",
+                        interactive=False,
+                    )
                     reset_btn = gr.Button("Reset Episode", elem_classes="dcr-btn-secondary")
 
                 with gr.Group(elem_classes="dcr-panel"):
@@ -257,6 +417,10 @@ def build_developer_control_room_ui(
 
                 with gr.Group(elem_classes="dcr-status"):
                     status = gr.Textbox(label="Status", interactive=False, container=False)
+                with gr.Group(elem_classes="dcr-panel"):
+                    gr.HTML("<div class='dcr-panel-title'>Pipeline Status / Debug Steps</div>")
+                    pipeline_runtime = gr.Markdown("Runtime status: idle")
+                    pipeline_steps = gr.Markdown("No pipeline execution yet.")
 
             with gr.Column(scale=4):
                 with gr.Group(elem_classes="dcr-panel"):
@@ -271,18 +435,28 @@ def build_developer_control_room_ui(
                         gr.Markdown(quick_start_md)
 
         reset_btn.click(
-            fn=reset_env,
-            inputs=[task_id, scenario_index],
-            outputs=[obs_display, raw_json, status],
+            fn=reset_from_preset,
+            inputs=[task_id, scenario_id],
+            outputs=[obs_display, raw_json, status, pipeline_runtime, pipeline_steps],
         )
         step_btn.click(
-            fn=step_env,
+            fn=step_with_debug,
             inputs=[action_type, params_json],
-            outputs=[obs_display, raw_json, status],
+            outputs=[obs_display, raw_json, status, pipeline_runtime, pipeline_steps],
         )
         state_btn.click(
             fn=get_state_sync,
-            outputs=[raw_json],
+            outputs=[raw_json, pipeline_runtime, pipeline_steps, status],
+        )
+        task_id.change(
+            fn=on_task_change,
+            inputs=[task_id],
+            outputs=[scenario_id, source_csv, raw_table, final_view, validator_profile],
+        )
+        scenario_id.change(
+            fn=on_scenario_change,
+            inputs=[task_id, scenario_id],
+            outputs=[source_csv, raw_table, final_view, validator_profile],
         )
 
     return demo
