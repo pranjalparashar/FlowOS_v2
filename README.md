@@ -11,16 +11,16 @@ pinned: false
 
 FlowOS V2 is an OpenEnv environment for training LLM agents to build and repair realistic data-platform workflows. Instead of solving a toy grid world, the agent has to read workspace files, inspect schemas, write pipeline YAML and SQL, run validators, interpret runtime failures, and submit a working warehouse report.
 
-- Hugging Face Space: [praanjal-flowos-v2.hf.space](https://praanjal-flowos-v2.hf.space)
-- OpenEnv manifest: [openenv.yaml](/Users/pranjalparashar/Desktop/hackz/cw-apr1/control-room/developer_control_room/openenv.yaml)
+- Hugging Face Space: [praanjal-flowos-v2.hf.space](https://huggingface.co/spaces/praanjal/flowOs_v2)
+- OpenEnv manifest: [openenv.yaml](https://huggingface.co/spaces/praanjal/flowOs_v2/blob/main/openenv.yaml)
 - Training scripts:
-  - [collect_traces.py](/Users/pranjalparashar/Desktop/hackz/cw-apr1/control-room/developer_control_room/collect_traces.py)
-  - [train_sft.py](/Users/pranjalparashar/Desktop/hackz/cw-apr1/control-room/developer_control_room/train_sft.py)
-  - [train.py](/Users/pranjalparashar/Desktop/hackz/cw-apr1/control-room/developer_control_room/train.py)
-  - [eval.py](/Users/pranjalparashar/Desktop/hackz/cw-apr1/control-room/developer_control_room/eval.py)
-- Plotting script: [plot_metrics.py](/Users/pranjalparashar/Desktop/hackz/cw-apr1/control-room/developer_control_room/plot_metrics.py)
-- Blog / writeup: `ADD_HF_BLOG_LINK_HERE`
-- Video / slides: `ADD_VIDEO_OR_SLIDES_LINK_HERE`
+  - [collect_traces.py](https://huggingface.co/spaces/praanjal/flowOs_v2/blob/main/collect_traces.py)
+  - [train_sft.py](https://huggingface.co/spaces/praanjal/flowOs_v2/blob/main/train_sft.py)
+  - [train.py](https://huggingface.co/spaces/praanjal/flowOs_v2/blob/main/train.py)
+  - [eval.py](https://huggingface.co/spaces/praanjal/flowOs_v2/blob/main/eval.py)
+- Plotting script: [plot_metrics.py](https://huggingface.co/spaces/praanjal/flowOs_v2/blob/main/plot_metrics.py)
+- Blog / writeup: `https://huggingface.co/spaces/praanjal/flowOs_v2/blob/main/blog.md`
+
 
 ## Problem
 
@@ -99,10 +99,10 @@ The reward and grading logic combines:
 
 This is implemented through OpenEnv-compatible state, validator, and grader flows in:
 
-- [tasks.py](/Users/pranjalparashar/Desktop/hackz/cw-apr1/control-room/developer_control_room/tasks.py)
-- [graders.py](/Users/pranjalparashar/Desktop/hackz/cw-apr1/control-room/developer_control_room/graders.py)
-- [runtime.py](/Users/pranjalparashar/Desktop/hackz/cw-apr1/control-room/developer_control_room/runtime.py)
-- [server/developer_control_room_environment.py](/Users/pranjalparashar/Desktop/hackz/cw-apr1/control-room/developer_control_room/server/developer_control_room_environment.py)
+- [tasks.py](https://huggingface.co/spaces/praanjal/flowOs_v2/blob/main/tasks.py)
+- [graders.py](https://huggingface.co/spaces/praanjal/flowOs_v2/blob/main/graders.py)
+- [runtime.py](https://huggingface.co/spaces/praanjal/flowOs_v2/blob/main/runtime.py)
+- [server/developer_control_room_environment.py](https://huggingface.co/spaces/praanjal/flowOs_v2/blob/main/server/developer_control_room_environment.py)
 
 ## Scenarios
 
@@ -172,7 +172,7 @@ CUDA_VISIBLE_DEVICES=0 python train_sft.py \
 
 ### 2. Experimental path: GRPO / TRL
 
-We also have an RL-style training entrypoint in [train.py](/Users/pranjalparashar/Desktop/hackz/cw-apr1/control-room/developer_control_room/train.py) for future work, but the current submission story is centered on the stable SFT path because it is the most reproducible on commodity GPUs.
+We also have an RL-style training entrypoint in [train.py](https://huggingface.co/spaces/praanjal/flowOs_v2/blob/main/train.py) for future work, but the current submission story is centered on the stable SFT path because it is the most reproducible on commodity GPUs.
 
 ## Results
 
@@ -264,9 +264,8 @@ python eval.py \
 Please link all final materials here before submission:
 
 - Hugging Face Space: [https://praanjal-flowos-v2.hf.space](https://praanjal-flowos-v2.hf.space)
-- Hugging Face blog: `ADD_HF_BLOG_LINK_HERE`
-- Video / slides: `ADD_VIDEO_OR_SLIDES_LINK_HERE`
-- Colab notebook: `ADD_COLAB_LINK_HERE`
+- Hugging Face blog: `https://huggingface.co/spaces/praanjal/flowOs_v2/blob/main/blog.md`
+- Colab notebook: `https://huggingface.co/spaces/praanjal/flowOs_v2/blob/main/train.ipynb`
 
 ## Future multi-agent architecture
 

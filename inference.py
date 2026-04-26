@@ -38,7 +38,7 @@ from baseline import action_is_valid, build_action, fallback_action, fetch_grade
 from client import DeveloperControlRoomEnv
 from tasks import list_tasks
 
-DEFAULT_ENV_URL = "https://praanjal-control-room.hf.space"
+DEFAULT_ENV_URL = "https://praanjal-flowos-v2.hf.space"
 # DEFAULT_ENV_URL = "http://localhost:7860"
 ENV_URL = os.getenv("ENV_URL") or DEFAULT_ENV_URL
 API_KEY = os.getenv("API_KEY")

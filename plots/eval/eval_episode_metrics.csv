@@ -1,0 +1,15 @@
+label,task_id,scenario_id,total_reward,score,solved,steps,fallback_steps,valid_model_steps
+base,simulate_csv_report_workflow,SIM-001,-0.22860000000000003,0.0614,False,12,0,12
+base,simulate_csv_report_workflow,SIM-002,-0.3907,0.1893,False,12,0,7
+base,simulate_csv_report_workflow,SIM-003,-0.2712,0.1988,False,12,0,10
+base,simulate_csv_report_workflow,SIM-004,-0.0729,0.4701,False,12,0,10
+base,simulate_csv_report_workflow,SIM-005,-0.4793,0.3112,False,12,0,6
+base,simulate_csv_report_workflow,SIM-006,-0.4868,0.2932,False,12,0,4
+base,simulate_csv_report_workflow,SIM-007,-0.17049999999999998,0.4295,False,12,0,6
+tuned,simulate_csv_report_workflow,SIM-001,0.30110000000000003,0.5311,False,12,0,12
+tuned,simulate_csv_report_workflow,SIM-002,0.14279999999999998,0.4528,False,12,0,10
+tuned,simulate_csv_report_workflow,SIM-003,0.202,0.482,False,12,0,11
+tuned,simulate_csv_report_workflow,SIM-004,-0.24999999999999994,0.383,False,12,0,7
+tuned,simulate_csv_report_workflow,SIM-005,0.3020000000000001,0.7125,False,12,0,10
+tuned,simulate_csv_report_workflow,SIM-006,0.16999999999999993,0.703,False,12,0,6
+tuned,simulate_csv_report_workflow,SIM-007,-0.17,0.35,False,12,0,4
