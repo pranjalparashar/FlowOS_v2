@@ -102,6 +102,19 @@ def _format_runtime_debug(observation: dict[str, Any]) -> tuple[str, str]:
     return runtime_md, log_md
 
 
+def _dropdown_update(value: str, choices: list[str]) -> dict[str, Any]:
+    normalized_choices = [str(choice) for choice in (choices or []) if str(choice)]
+    normalized_value = str(value or "")
+    if normalized_value and normalized_value not in normalized_choices:
+        normalized_choices = [normalized_value, *normalized_choices]
+    if not normalized_choices:
+        normalized_choices = [""]
+        normalized_value = ""
+    elif not normalized_value:
+        normalized_value = normalized_choices[0]
+    return gr.update(choices=normalized_choices, value=normalized_value)
+
+
 def build_developer_control_room_ui(
     web_manager: Any,
     action_fields: List[Dict[str, Any]],
@@ -290,23 +303,23 @@ def build_developer_control_room_ui(
         scenario_ids = _scenario_ids_for_task(task_id)
         scenario_value = scenario_ids[0] if scenario_ids else ""
         fields = _simulation_fields_for(task_id, scenario_value)
-        validators = fields["validators"] or [""]
+        validators = fields["validators"] or []
         return (
-            gr.Dropdown(choices=scenario_ids, value=scenario_value),
-            gr.Dropdown(choices=[fields["source_csv"]] if fields["source_csv"] else [""], value=fields["source_csv"] or ""),
-            gr.Dropdown(choices=[fields["raw_table"]] if fields["raw_table"] else [""], value=fields["raw_table"] or ""),
-            gr.Dropdown(choices=[fields["final_view"]] if fields["final_view"] else [""], value=fields["final_view"] or ""),
-            gr.Dropdown(choices=validators, value=validators[0]),
+            _dropdown_update(scenario_value, scenario_ids),
+            _dropdown_update(fields["source_csv"], [fields["source_csv"]]),
+            _dropdown_update(fields["raw_table"], [fields["raw_table"]]),
+            _dropdown_update(fields["final_view"], [fields["final_view"]]),
+            _dropdown_update(validators[0] if validators else "", validators),
         )
 
     def on_scenario_change(task_id: str, scenario_id: str):
         fields = _simulation_fields_for(task_id, scenario_id)
-        validators = fields["validators"] or [""]
+        validators = fields["validators"] or []
         return (
-            gr.Dropdown(choices=[fields["source_csv"]] if fields["source_csv"] else [""], value=fields["source_csv"] or ""),
-            gr.Dropdown(choices=[fields["raw_table"]] if fields["raw_table"] else [""], value=fields["raw_table"] or ""),
-            gr.Dropdown(choices=[fields["final_view"]] if fields["final_view"] else [""], value=fields["final_view"] or ""),
-            gr.Dropdown(choices=validators, value=validators[0]),
+            _dropdown_update(fields["source_csv"], [fields["source_csv"]]),
+            _dropdown_update(fields["raw_table"], [fields["raw_table"]]),
+            _dropdown_update(fields["final_view"], [fields["final_view"]]),
+            _dropdown_update(validators[0] if validators else "", validators),
         )
 
     async def reset_from_preset(task_id: str, scenario_id: str):
